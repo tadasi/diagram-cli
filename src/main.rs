@@ -42,13 +42,13 @@ fn main() {
         std::process::exit(2);
     }
 
-    let agent_out = run_cursor_agent(&workspace, &curl_line).unwrap_or_else(|e| {
+    let agent_out = run_claude_agent(&workspace, &curl_line).unwrap_or_else(|e| {
         eprintln!("dg: {e}");
         std::process::exit(1);
     });
 
     let mermaid = extract_mermaid_block(&agent_out).unwrap_or_else(|| {
-        eprintln!("dg: no Mermaid code block in Cursor Agent output. Raw output follows:\n---\n{agent_out}\n---");
+        eprintln!("dg: no Mermaid code block in Claude output. Raw output follows:\n---\n{agent_out}\n---");
         std::process::exit(1);
     });
 
@@ -94,10 +94,10 @@ fn print_usage() {
     eprintln!("  dg resource_name            # 同上（先頭に / が付与される）");
     eprintln!();
     eprintln!("Environment:");
-    eprintln!("  DG_WORKSPACE   Rails アプリのルート（既定: ~/Projects/tech-index があればそれ、なければカレント）");
-    eprintln!("  DG_BASE_URL    パスだけ渡すときのオリジン（例: http://localhost:3000）。未設定時は .dg-base-url を参照");
-    eprintln!("  DG_CURSOR_MODEL  cursor agent の --model（未設定時は auto＝無料プランの Auto に合わせる）");
-    eprintln!("  CURSOR_CLI     cursor 実行ファイル（既定: Cursor.app 同梱の cursor）");
+    eprintln!("  DG_WORKSPACE    Rails アプリのルート（既定: ~/Projects/tech-index があればそれ、なければカレント）");
+    eprintln!("  DG_BASE_URL     パスだけ渡すときのオリジン（例: http://localhost:3000）。未設定時は .dg-base-url を参照");
+    eprintln!("  DG_CLAUDE_MODEL claude CLI の --model（未設定時は claude-sonnet-4-6）");
+    eprintln!("  CLAUDE_CLI      claude 実行ファイルのパス（既定: PATH から解決）");
 }
 
 /// `dg curl ...` に加え、URL 直指定・`-L` のみ・ベース URL + パスを受け付ける。
@@ -204,23 +204,19 @@ fn resolve_workspace() -> PathBuf {
     env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn resolve_cursor_cli() -> Option<PathBuf> {
-    if let Ok(p) = env::var("CURSOR_CLI") {
+fn resolve_claude_cli() -> PathBuf {
+    if let Ok(p) = env::var("CLAUDE_CLI") {
         let pb = PathBuf::from(p.trim());
         if pb.exists() {
-            return Some(pb);
+            return pb;
         }
     }
-    let mac = PathBuf::from("/Applications/Cursor.app/Contents/Resources/app/bin/cursor");
-    if mac.exists() {
-        return Some(mac);
-    }
-    Some(PathBuf::from("cursor"))
+    PathBuf::from("claude")
 }
 
 fn build_agent_prompt(curl_line: &str) -> String {
     format!(
-        r#"あなたはこのワークスペース内の Rails アプリを読む Cursor Agent です。
+        r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
 
 次の HTTP リクエスト（ユーザーが入力した curl 相当の文字列全体）を解釈してください。
 
@@ -239,45 +235,33 @@ fn build_agent_prompt(curl_line: &str) -> String {
     )
 }
 
-fn run_cursor_agent(workspace: &std::path::Path, curl_line: &str) -> Result<String, String> {
-    let cursor = resolve_cursor_cli().ok_or_else(|| "could not resolve Cursor CLI path".to_string())?;
+fn run_claude_agent(workspace: &std::path::Path, curl_line: &str) -> Result<String, String> {
+    let claude = resolve_claude_cli();
     let prompt = build_agent_prompt(curl_line);
-    let ws = workspace
-        .to_str()
-        .ok_or_else(|| "invalid workspace path".to_string())?;
 
-    let mut cmd = Command::new(&cursor);
-    cmd.args([
-        "agent",
-        "--print",
-        "--trust",
-        "--workspace",
-        ws,
-        "--mode",
-        "ask",
-        "--output-format",
-        "text",
-    ]);
-    // エディタ既定が名前付きモデルのとき、無料プランでは失敗する。既定では Auto（CLI では auto）のみ使う。
-    match env::var("DG_CURSOR_MODEL") {
-        Ok(s) if !s.trim().is_empty() => {
-            cmd.arg("--model").arg(s.trim());
-        }
-        _ => {
-            cmd.arg("--model").arg("auto");
-        }
-    }
-    cmd.arg(prompt);
-    let output = cmd
+    let model = env::var("DG_CLAUDE_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+
+    let output = Command::new(&claude)
+        .args([
+            "-p",
+            "--dangerously-skip-permissions",
+            "--model",
+            &model,
+            &prompt,
+        ])
+        .current_dir(workspace)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| format!("failed to spawn Cursor CLI ({cursor:?}): {e}"))?;
+        .map_err(|e| format!("failed to spawn Claude CLI ({claude:?}): {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "cursor agent exited with {}: {}",
+            "claude exited with {}: {}",
             output.status,
             stderr.trim()
         ));
