@@ -2,84 +2,314 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::Stdio;
 
 fn main() {
-    let mut args = env::args().skip(1);
-    let Some(first) = args.next() else {
-        eprintln!("Usage:");
-        eprintln!("  dg <text>");
-        eprintln!("  dg curl [curl args...] <url>");
-        std::process::exit(2);
-    };
-
-    if first == "curl" {
-        let url = extract_url(args).unwrap_or_else(|| {
-            eprintln!("dg curl: URL not found in args");
-            std::process::exit(2);
-        });
-
-        let path = extract_path(&url).unwrap_or_else(|| {
-            eprintln!("dg curl: could not parse URL: {url}");
-            std::process::exit(2);
-        });
-
-        if path == "/tech_book_terms" {
-            let mermaid = mermaid_tech_book_terms_index();
-            let mmd_path = desktop_path("tech_book_terms.mmd").unwrap_or_else(|| {
-                eprintln!("dg curl: could not resolve ~/Desktop");
-                std::process::exit(2);
-            });
-            if let Err(e) = fs::write(&mmd_path, &mermaid) {
-                eprintln!("dg curl: failed to write {}: {e}", mmd_path.display());
-                std::process::exit(1);
-            }
-
-            let html_path = desktop_path("tech_book_terms.html").unwrap_or_else(|| {
-                eprintln!("dg curl: could not resolve ~/Desktop");
-                std::process::exit(2);
-            });
-            let html = mermaid_html_page("TechBookTerms#index", &mermaid);
-            if let Err(e) = fs::write(&html_path, html) {
-                eprintln!("dg curl: failed to write {}: {e}", html_path.display());
-                std::process::exit(1);
-            }
-
-            // Open the rendered diagram in the default browser (macOS).
-            let status = Command::new("open").arg(&html_path).status();
-            match status {
-                Ok(s) if s.success() => {}
-                Ok(s) => {
-                    eprintln!("dg curl: open failed with exit code: {s}");
-                }
-                Err(e) => {
-                    eprintln!("dg curl: failed to run open: {e}");
-                }
-            }
-
-            println!("{}", html_path.display());
-            return;
-        }
-
-        eprintln!("dg curl: unsupported path: {path}");
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.is_empty() {
+        print_usage();
         std::process::exit(2);
     }
 
-    println!("{first}");
+    let workspace = resolve_workspace();
+    let curl_parts = match resolve_curl_parts(args, &workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("dg: {e}");
+            print_usage();
+            std::process::exit(2);
+        }
+    };
+
+    if curl_parts.is_empty() {
+        eprintln!("dg: need a URL or curl-style args");
+        std::process::exit(2);
+    }
+
+    let curl_line = curl_parts.join(" ");
+    let url = extract_url_from_parts(&curl_parts).unwrap_or_else(|| {
+        eprintln!("dg: URL not found in args");
+        std::process::exit(2);
+    });
+
+    let path = extract_path(&url).unwrap_or_else(|| {
+        eprintln!("dg: could not parse URL: {url}");
+        std::process::exit(2);
+    });
+
+    if !workspace.exists() {
+        eprintln!("dg: DG_WORKSPACE does not exist: {}", workspace.display());
+        std::process::exit(2);
+    }
+
+    let agent_out = run_cursor_agent(&workspace, &curl_line).unwrap_or_else(|e| {
+        eprintln!("dg: {e}");
+        std::process::exit(1);
+    });
+
+    let mermaid = extract_mermaid_block(&agent_out).unwrap_or_else(|| {
+        eprintln!("dg: no Mermaid code block in Cursor Agent output. Raw output follows:\n---\n{agent_out}\n---");
+        std::process::exit(1);
+    });
+
+    let base = path_to_base_name(&path);
+    let title = format!("{base} (from curl)");
+    let mmd_name = format!("dg_{base}.mmd");
+    let html_name = format!("dg_{base}.html");
+
+    let mmd_path = desktop_path(&mmd_name).unwrap_or_else(|| {
+        eprintln!("dg: could not resolve ~/Desktop");
+        std::process::exit(2);
+    });
+    if let Err(e) = fs::write(&mmd_path, &mermaid) {
+        eprintln!("dg: failed to write {}: {e}", mmd_path.display());
+        std::process::exit(1);
+    }
+
+    let html_path = desktop_path(&html_name).unwrap_or_else(|| {
+        eprintln!("dg: could not resolve ~/Desktop");
+        std::process::exit(2);
+    });
+    let html = mermaid_html_page(&title, &mermaid);
+    if let Err(e) = fs::write(&html_path, html) {
+        eprintln!("dg: failed to write {}: {e}", html_path.display());
+        std::process::exit(1);
+    }
+
+    let status = Command::new("open").arg(&html_path).status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("dg: open failed with exit code: {s}"),
+        Err(e) => eprintln!("dg: failed to run open: {e}"),
+    }
+
+    println!("{}", html_path.display());
 }
 
-fn extract_url(args: impl Iterator<Item = String>) -> Option<String> {
-    args.filter(|a| a.starts_with("http://") || a.starts_with("https://"))
-        .next()
+fn print_usage() {
+    eprintln!("Usage:");
+    eprintln!("  dg [curl args...] <url>     # --location / -L や URL をそのまま指定可（先頭の curl は省略可）");
+    eprintln!("  dg <https?://...>           # 単一 URL の省略形");
+    eprintln!("  dg /path                    # DG_BASE_URL または DG_WORKSPACE/.dg-base-url が必要");
+    eprintln!("  dg resource_name            # 同上（先頭に / が付与される）");
+    eprintln!();
+    eprintln!("Environment:");
+    eprintln!("  DG_WORKSPACE   Rails アプリのルート（既定: ~/Projects/tech-index があればそれ、なければカレント）");
+    eprintln!("  DG_BASE_URL    パスだけ渡すときのオリジン（例: http://localhost:3000）。未設定時は .dg-base-url を参照");
+    eprintln!("  DG_CURSOR_MODEL  cursor agent の --model（未設定時は auto＝無料プランの Auto に合わせる）");
+    eprintln!("  CURSOR_CLI     cursor 実行ファイル（既定: Cursor.app 同梱の cursor）");
+}
+
+/// `dg curl ...` に加え、URL 直指定・`-L` のみ・ベース URL + パスを受け付ける。
+fn resolve_curl_parts(args: Vec<String>, workspace: &std::path::Path) -> Result<Vec<String>, String> {
+    if args.is_empty() {
+        return Err("no arguments".to_string());
+    }
+
+    let mut rest = args;
+    if rest[0] == "curl" {
+        rest.remove(0);
+        if rest.is_empty() {
+            return Err("need URL or args after 'curl'".to_string());
+        }
+        return Ok(rest);
+    }
+
+    if rest.iter().any(|a| a.starts_with("http://") || a.starts_with("https://")) {
+        return Ok(rest);
+    }
+
+    if rest[0] == "--location" || rest[0] == "-L" {
+        return Ok(rest);
+    }
+
+    let base = resolve_base_url(workspace);
+    if let Some(base) = base {
+        let base = base.trim_end_matches('/').to_string();
+        if rest.len() == 1 {
+            let p = rest[0].trim();
+            let path = if p.starts_with('/') {
+                p.to_string()
+            } else {
+                format!("/{}", p.trim_start_matches('/'))
+            };
+            let url = format!("{base}{path}");
+            return Ok(vec!["--location".to_string(), url]);
+        }
+    }
+
+    Err(
+        "need a URL (http/https), or --location/-L <url>, or one path with DG_BASE_URL / .dg-base-url"
+            .to_string(),
+    )
+}
+
+fn resolve_base_url(workspace: &std::path::Path) -> Option<String> {
+    if let Ok(v) = env::var("DG_BASE_URL") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+    read_workspace_base_url(workspace)
+}
+
+fn read_workspace_base_url(workspace: &std::path::Path) -> Option<String> {
+    let p = workspace.join(".dg-base-url");
+    let s = fs::read_to_string(p).ok()?;
+    let line = s.lines().next()?.trim();
+    if line.is_empty() {
+        return None;
+    }
+    Some(line.to_string())
+}
+
+fn extract_url_from_parts(parts: &[String]) -> Option<String> {
+    parts
+        .iter()
+        .find(|a| a.starts_with("http://") || a.starts_with("https://"))
         .map(|s| s.trim_matches('\'').trim_matches('"').to_string())
 }
 
 fn extract_path(url: &str) -> Option<String> {
-    // Very small parser good enough for: http://localhost:3000/tech_book_terms?x=y
     let after_scheme = url.split("://").nth(1)?;
     let slash = after_scheme.find('/')?;
     let path_and_more = &after_scheme[slash..];
     let path = path_and_more.split('?').next().unwrap_or(path_and_more);
     Some(path.to_string())
+}
+
+fn path_to_base_name(path: &str) -> String {
+    let p = path.trim_end_matches('/');
+    let s = p.rsplit('/').next().unwrap_or("diagram");
+    if s.is_empty() {
+        "diagram".to_string()
+    } else {
+        s.chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect()
+    }
+}
+
+fn resolve_workspace() -> PathBuf {
+    if let Ok(p) = env::var("DG_WORKSPACE") {
+        return PathBuf::from(p);
+    }
+    if let Ok(home) = env::var("HOME") {
+        let tech = PathBuf::from(home).join("Projects/tech-index");
+        if tech.is_dir() {
+            return tech;
+        }
+    }
+    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn resolve_cursor_cli() -> Option<PathBuf> {
+    if let Ok(p) = env::var("CURSOR_CLI") {
+        let pb = PathBuf::from(p.trim());
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+    let mac = PathBuf::from("/Applications/Cursor.app/Contents/Resources/app/bin/cursor");
+    if mac.exists() {
+        return Some(mac);
+    }
+    Some(PathBuf::from("cursor"))
+}
+
+fn build_agent_prompt(curl_line: &str) -> String {
+    format!(
+        r#"あなたはこのワークスペース内の Rails アプリを読む Cursor Agent です。
+
+次の HTTP リクエスト（ユーザーが入力した curl 相当の文字列全体）を解釈してください。
+
+1. `config/routes.rb` から該当するルートと `Controller#action` を特定する（GET/POST 等はリクエストから推測）。
+2. 該当コントローラと、そこから呼ばれる主要なモデル/スコープ/関連をコードに基づいて要約する。
+3. 処理の流れを **Mermaid の flowchart（`flowchart TD`）** で表現する。
+
+出力ルール（厳守）:
+- 応答は **```mermaid で始まるフェンス付きコードブロック 1 つだけ**。その前後に説明文・見出し・箇条書きを書かない。
+- Mermaid は v11 でパース可能な記法にする。ノードラベルに `()` `:` `#` など記号が多い場合は `["..."]` 形式のラベルを使う。
+- ルートが特定できない場合は「ルート不明」として分岐を書く。
+
+ユーザー入力（curl 全体）:
+{curl_line}
+"#
+    )
+}
+
+fn run_cursor_agent(workspace: &std::path::Path, curl_line: &str) -> Result<String, String> {
+    let cursor = resolve_cursor_cli().ok_or_else(|| "could not resolve Cursor CLI path".to_string())?;
+    let prompt = build_agent_prompt(curl_line);
+    let ws = workspace
+        .to_str()
+        .ok_or_else(|| "invalid workspace path".to_string())?;
+
+    let mut cmd = Command::new(&cursor);
+    cmd.args([
+        "agent",
+        "--print",
+        "--trust",
+        "--workspace",
+        ws,
+        "--mode",
+        "ask",
+        "--output-format",
+        "text",
+    ]);
+    // エディタ既定が名前付きモデルのとき、無料プランでは失敗する。既定では Auto（CLI では auto）のみ使う。
+    match env::var("DG_CURSOR_MODEL") {
+        Ok(s) if !s.trim().is_empty() => {
+            cmd.arg("--model").arg(s.trim());
+        }
+        _ => {
+            cmd.arg("--model").arg("auto");
+        }
+    }
+    cmd.arg(prompt);
+    let output = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to spawn Cursor CLI ({cursor:?}): {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "cursor agent exited with {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn extract_mermaid_block(text: &str) -> Option<String> {
+    let markers = ["```mermaid\n", "```mermaid\r\n", "```mermaid\r"];
+    for m in markers {
+        if let Some(i) = text.find(m) {
+            let rest = &text[i + m.len()..];
+            if let Some(end) = rest.find("```") {
+                let body = rest[..end].trim();
+                if !body.is_empty() {
+                    return Some(body.to_string());
+                }
+            }
+        }
+    }
+    if let Some(i) = text.find("```mermaid") {
+        let rest = &text[i + "```mermaid".len()..];
+        let rest = rest.trim_start_matches(['\r', '\n', ' ']);
+        if let Some(end) = rest.find("```") {
+            let body = rest[..end].trim();
+            if !body.is_empty() {
+                return Some(body.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn desktop_path(filename: &str) -> Option<PathBuf> {
@@ -90,57 +320,41 @@ fn desktop_path(filename: &str) -> Option<PathBuf> {
     Some(p)
 }
 
-fn mermaid_tech_book_terms_index() -> String {
-    // Based on tech-index/app/controllers/tech_book_terms_controller.rb#index
-    // and related models.
-    [
-        "flowchart TD",
-        "  A[Client] -->|GET /tech_book_terms| B[Rails Router]",
-        "  B --> C[TechBookTermsController index]",
-        "  C --> D[TechBookTerm.visible_to(current_user)]",
-        "  D --> E[includes(:tech_book) order(created_at: :desc)]",
-        "  E --> F{params[:q] present?}",
-        "  F -->|yes| G[TechBookTerm.search(q) (joins :tech_book, searches columns + book name + related terms)]",
-        "  F -->|no| H[skip search]",
-        "  G --> I[page(params[:page]).per(100)]",
-        "  H --> I",
-        r#"  I --> J["TechBookTerm.preload_related_terms(records) (load RelatedTerm for related_term_ids)"]"#,
-        r#"  C --> K["Sidebar: TechBook.order(LOWER(name)) page(params[:books_page]).per(100)"]"#,
-        r#"  J --> L["Render HTML: tech_book_terms/index"]"#,
-        "  K --> L",
-    ]
-    .join("\n")
-}
-
 fn mermaid_html_page(title: &str, mermaid: &str) -> String {
-    // Follow Mermaid v11 official "simple full example":
-    // put the graph definition directly inside <pre class="mermaid"> ... </pre>
-    // and load mermaid as an ESM module. Avoid HTML-escaping `>` into `&gt;`.
     format!(
-        r#"<!doctype html>
+        r###"<!DOCTYPE html>
 <html lang="ja">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{}</title>
-    <style>
-      body {{ font-family: -apple-system, system-ui, sans-serif; margin: 24px; }}
-      pre.mermaid {{ border: 1px solid #ddd; border-radius: 8px; padding: 16px; overflow: auto; }}
-    </style>
+    <script src="https://cdn.tailwindcss.com"></script>
   </head>
-  <body>
-    <h1>{}</h1>
-    <pre class="mermaid">
+  <body class="w-[1280px] h-[720px] m-0 p-0 overflow-hidden bg-white">
+    <div class="w-full h-full flex flex-col gap-6 p-10">
+      <div class="border-2 border-blue-300 rounded-lg p-6 bg-blue-50">
+        <h2 class="text-xl font-bold text-blue-900 mb-4">{}</h2>
+        <div class="mermaid">
 {}
-    </pre>
+        </div>
+      </div>
+    </div>
     <script type="module">
       import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-      // Default behavior renders all elements with class="mermaid" after load.
-      // Explicit initialization is optional for this simple use-case.
+      mermaid.initialize({{
+        startOnLoad: true,
+        theme: "base",
+        themeVariables: {{
+          primaryColor: "#dbeafe",
+          primaryBorderColor: "#3b82f6",
+          lineColor: "#6b7280",
+          fontFamily: "system-ui, sans-serif"
+        }}
+      }});
     </script>
   </body>
 </html>
-"#,
+"###,
         title, title, mermaid
     )
 }
