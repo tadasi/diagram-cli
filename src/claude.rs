@@ -121,7 +121,7 @@ pub fn run_claude_agent(
     let max_turns = env::var("DG_MAX_TURNS")
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(6)
+        .unwrap_or(20)
         .to_string();
 
     let output = Command::new(&claude)
