@@ -1,18 +1,228 @@
 use std::env;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 
+// =============================================================================
+// 設定 (Config)
+// =============================================================================
+
+const DIAGRAM_TYPES: &[(&str, &str)] = &[
+    ("flowchart", "フローチャート"),
+    ("sequence", "シーケンス図"),
+    ("activity", "アクティビティ図"),
+    ("component", "コンポーネント図"),
+    ("state", "状態遷移図"),
+];
+
+struct DgConfig {
+    workspace: String,
+    diagram_type: String,
+    output_dir: String,
+}
+
+impl DgConfig {
+    fn config_path() -> Option<PathBuf> {
+        let home = env::var("HOME").ok()?;
+        Some(PathBuf::from(home).join(".config/dg/config.json"))
+    }
+
+    fn load() -> Option<DgConfig> {
+        let path = Self::config_path()?;
+        let text = fs::read_to_string(path).ok()?;
+        Self::from_json(&text)
+    }
+
+    fn save(&self) -> Result<(), String> {
+        let path = Self::config_path().ok_or("could not resolve config path")?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+        }
+        fs::write(&path, self.to_json()).map_err(|e| format!("write: {e}"))
+    }
+
+    fn workspace_abs(&self) -> PathBuf {
+        home_dir().join(&self.workspace)
+    }
+
+    fn output_dir_abs(&self) -> PathBuf {
+        home_dir().join(&self.output_dir)
+    }
+
+    fn diagram_type_label(&self) -> &str {
+        DIAGRAM_TYPES
+            .iter()
+            .find(|(k, _)| *k == self.diagram_type)
+            .map(|(_, v)| *v)
+            .unwrap_or("フローチャート")
+    }
+
+    fn to_json(&self) -> String {
+        format!(
+            "{{\n  \"workspace\": \"{}\",\n  \"diagram_type\": \"{}\",\n  \"output_dir\": \"{}\"\n}}\n",
+            self.workspace, self.diagram_type, self.output_dir
+        )
+    }
+
+    fn from_json(text: &str) -> Option<DgConfig> {
+        let ws = json_string_value(text, "workspace")?;
+        let dt = json_string_value(text, "diagram_type")?;
+        let od = json_string_value(text, "output_dir")?;
+        Some(DgConfig { workspace: ws, diagram_type: dt, output_dir: od })
+    }
+}
+
+fn json_string_value(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let i = json.find(&needle)? + needle.len();
+    let rest = &json[i..];
+    let colon = rest.find(':')?;
+    let after = &rest[colon + 1..];
+    let q1 = after.find('"')? + 1;
+    let after_q = &after[q1..];
+    let q2 = after_q.find('"')?;
+    Some(after_q[..q2].to_string())
+}
+
+fn home_dir() -> PathBuf {
+    PathBuf::from(env::var("HOME").unwrap_or_default())
+}
+
+// =============================================================================
+// 対話プロンプト
+// =============================================================================
+
+fn prompt_line(msg: &str) -> String {
+    eprint!("{msg}");
+    io::stderr().flush().ok();
+    let mut buf = String::new();
+    io::stdin().lock().read_line(&mut buf).ok();
+    buf.trim().to_string()
+}
+
+fn prompt_yn(msg: &str) -> bool {
+    loop {
+        let ans = prompt_line(msg);
+        match ans.to_lowercase().as_str() {
+            "y" | "yes" => return true,
+            "n" | "no" => return false,
+            _ => eprintln!("  Y または N で回答してください。"),
+        }
+    }
+}
+
+fn run_setup() -> DgConfig {
+    let prev = DgConfig::load();
+    eprintln!("=== dg: 初期設定 ===\n");
+
+    // 1. ワークスペース
+    let default_ws = prev.as_ref().map(|c| c.workspace.as_str()).unwrap_or("");
+    eprintln!("対象プロジェクトディレクトリ（ルートからの相対パス）");
+    eprintln!("  例: Projects/your-project");
+    let workspace = loop {
+        let prompt = "> ";
+        let input = prompt_line(&prompt);
+        if input.is_empty() {
+            if !default_ws.is_empty() {
+                break default_ws.to_string();
+            }
+            eprintln!("  パスを入力してください。");
+            continue;
+        }
+        let abs = home_dir().join(&input);
+        if !abs.is_dir() {
+            eprintln!("  警告: ~/{input} は存在しません。このまま設定します。");
+        }
+        break input;
+    };
+
+    // 2. 図の種類
+    let default_dt = prev.as_ref().map(|c| c.diagram_type.as_str()).unwrap_or("flowchart");
+    let default_idx = DIAGRAM_TYPES
+        .iter()
+        .position(|(k, _)| *k == default_dt)
+        .unwrap_or(0);
+    eprintln!("\nシステム図の種類:");
+    for (i, (_, label)) in DIAGRAM_TYPES.iter().enumerate() {
+        eprintln!("  {}: {label}", i + 1);
+    }
+    let diagram_type = loop {
+        let input = prompt_line("番号を選択: ");
+        if input.is_empty() {
+            break DIAGRAM_TYPES[default_idx].0.to_string();
+        }
+        if let Ok(n) = input.parse::<usize>() {
+            if n >= 1 && n <= DIAGRAM_TYPES.len() {
+                break DIAGRAM_TYPES[n - 1].0.to_string();
+            }
+        }
+        eprintln!("  1〜{} の番号を入力してください。", DIAGRAM_TYPES.len());
+    };
+
+    // 3. 出力先
+    let default_od = prev.as_ref().map(|c| c.output_dir.as_str()).unwrap_or("Desktop");
+    eprintln!("\nファイルの出力先（ルートからの相対パス）");
+    let output_dir = {
+        let input = prompt_line(&format!("出力先 [{default_od}]: "));
+        if input.is_empty() { default_od.to_string() } else { input }
+    };
+
+    let config = DgConfig { workspace, diagram_type, output_dir };
+    if let Err(e) = config.save() {
+        eprintln!("\ndg: 設定の保存に失敗: {e}");
+        std::process::exit(1);
+    }
+    eprintln!("\n設定を保存しました。");
+    config
+}
+
+fn print_config(config: &DgConfig) {
+    eprintln!("--- 現在の設定 ---");
+    eprintln!("  対象ディレクトリ : ~/{}", config.workspace);
+    eprintln!("  図の種類         : {}", config.diagram_type_label());
+    eprintln!("  出力先           : ~/{}", config.output_dir);
+    eprintln!("------------------");
+}
+
+// =============================================================================
+// main
+// =============================================================================
+
 fn main() {
-    // --- 引数パース: CLI 引数を curl 形式に正規化し、URL・パスを抽出する ---
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
         print_usage();
         std::process::exit(2);
     }
 
-    let workspace = resolve_workspace();
+    // --- dg init ---
+    if args[0] == "init" {
+        run_setup();
+        return;
+    }
+
+    // --- 設定の読み込み / 未初期化なら対話セットアップ → 確認ループ ---
+    let config = loop {
+        let c = match DgConfig::load() {
+            Some(c) => c,
+            None => {
+                eprintln!("dg: 初期設定が見つかりません。セットアップを開始します。\n");
+                run_setup()
+            }
+        };
+        print_config(&c);
+        if prompt_yn("このまま実行しますか？ (Y/N)（設定を変更する場合は N を選択してください）: ") {
+            eprintln!();
+            break c;
+        }
+        run_setup();
+    };
+
+    let workspace = config.workspace_abs();
+
+    // --- 引数パース: CLI 引数を curl 形式に正規化し、URL・パスを抽出する ---
     let curl_parts = match resolve_curl_parts(args, &workspace) {
         Ok(p) => p,
         Err(e) => {
@@ -39,44 +249,47 @@ fn main() {
     });
 
     if !workspace.exists() {
-        eprintln!("dg: DG_WORKSPACE does not exist: {}", workspace.display());
+        eprintln!("dg: workspace does not exist: {}", workspace.display());
         std::process::exit(2);
     }
 
-    // --- コード解析: Claude CLI で Rails コードを読み、Mermaid flowchart を生成する ---
-    let agent_out = run_claude_agent(&workspace, &curl_line).unwrap_or_else(|e| {
-        eprintln!("dg: {e}");
-        std::process::exit(1);
-    });
+    // --- コード解析: Claude CLI で Rails コードを読み、Mermaid 図を生成する ---
+    let agent_out = run_claude_agent(&workspace, &curl_line, &config.diagram_type)
+        .unwrap_or_else(|e| {
+            eprintln!("dg: {e}");
+            std::process::exit(1);
+        });
 
     let mermaid = extract_mermaid_block(&agent_out).unwrap_or_else(|| {
-        eprintln!("dg: no Mermaid code block in Claude output. Raw output follows:\n---\n{agent_out}\n---");
+        eprintln!(
+            "dg: no Mermaid code block in Claude output. Raw output follows:\n---\n{agent_out}\n---"
+        );
         std::process::exit(1);
     });
 
-    // --- ファイル出力: .mmd と可視化用 HTML を ~/Desktop に書き出す ---
+    // --- ファイル出力: .mmd と可視化用 HTML を出力先に書き出す ---
     let redacted = redact_curl_line(&curl_parts);
     let slug = path_to_slug(&path);
     let method = detect_http_method(&curl_parts);
     let ts = timestamp_suffix();
     let base_name = format!("dg_{slug}_{method}_{ts}");
     let title = format!("{slug} ({method})");
-    let mmd_name = format!("{base_name}.mmd");
-    let html_name = format!("{base_name}.html");
 
-    let mmd_path = desktop_path(&mmd_name).unwrap_or_else(|| {
-        eprintln!("dg: could not resolve ~/Desktop");
-        std::process::exit(2);
-    });
+    let out_dir = config.output_dir_abs();
+    if !out_dir.exists() {
+        if let Err(e) = fs::create_dir_all(&out_dir) {
+            eprintln!("dg: could not create output dir {}: {e}", out_dir.display());
+            std::process::exit(2);
+        }
+    }
+
+    let mmd_path = out_dir.join(format!("{base_name}.mmd"));
     if let Err(e) = fs::write(&mmd_path, &mermaid) {
         eprintln!("dg: failed to write {}: {e}", mmd_path.display());
         std::process::exit(1);
     }
 
-    let html_path = desktop_path(&html_name).unwrap_or_else(|| {
-        eprintln!("dg: could not resolve ~/Desktop");
-        std::process::exit(2);
-    });
+    let html_path = out_dir.join(format!("{base_name}.html"));
     let html = mermaid_html_page(&title, &mermaid, &redacted);
     if let Err(e) = fs::write(&html_path, html) {
         eprintln!("dg: failed to write {}: {e}", html_path.display());
@@ -94,22 +307,32 @@ fn main() {
     println!("{}", html_path.display());
 }
 
+// =============================================================================
+// Usage
+// =============================================================================
+
 fn print_usage() {
     eprintln!("Usage:");
-    eprintln!("  dg [curl args...] <url>     # --location / -L や URL をそのまま指定可（先頭の curl は省略可）");
+    eprintln!("  dg init                     # 初期設定（対象ディレクトリ・図の種類・出力先）");
+    eprintln!("  dg [curl args...] <url>     # システム図を生成（先頭の curl は省略可）");
     eprintln!("  dg <https?://...>           # 単一 URL の省略形");
-    eprintln!("  dg /path                    # DG_BASE_URL または DG_WORKSPACE/.dg-base-url が必要");
+    eprintln!("  dg /path                    # DG_BASE_URL / .dg-base-url + パス");
     eprintln!("  dg resource_name            # 同上（先頭に / が付与される）");
     eprintln!();
     eprintln!("Environment:");
-    eprintln!("  DG_WORKSPACE    Rails アプリのルート（既定: ~/Projects/tech-index があればそれ、なければカレント）");
-    eprintln!("  DG_BASE_URL     パスだけ渡すときのオリジン（例: http://localhost:3000）。未設定時は .dg-base-url を参照");
+    eprintln!("  DG_BASE_URL     パスだけ渡すときのオリジン（例: http://localhost:3000）");
     eprintln!("  DG_CLAUDE_MODEL claude CLI の --model（未設定時は claude-sonnet-4-6）");
     eprintln!("  CLAUDE_CLI      claude 実行ファイルのパス（既定: PATH から解決）");
 }
 
-/// `dg curl ...` に加え、URL 直指定・`-L` のみ・ベース URL + パスを受け付ける。
-fn resolve_curl_parts(args: Vec<String>, workspace: &std::path::Path) -> Result<Vec<String>, String> {
+// =============================================================================
+// curl 引数の解決
+// =============================================================================
+
+fn resolve_curl_parts(
+    args: Vec<String>,
+    workspace: &std::path::Path,
+) -> Result<Vec<String>, String> {
     if args.is_empty() {
         return Err("no arguments".to_string());
     }
@@ -123,7 +346,10 @@ fn resolve_curl_parts(args: Vec<String>, workspace: &std::path::Path) -> Result<
         return Ok(rest);
     }
 
-    if rest.iter().any(|a| a.starts_with("http://") || a.starts_with("https://")) {
+    if rest
+        .iter()
+        .any(|a| a.starts_with("http://") || a.starts_with("https://"))
+    {
         return Ok(rest);
     }
 
@@ -159,10 +385,6 @@ fn resolve_base_url(workspace: &std::path::Path) -> Option<String> {
             return Some(t.to_string());
         }
     }
-    read_workspace_base_url(workspace)
-}
-
-fn read_workspace_base_url(workspace: &std::path::Path) -> Option<String> {
     let p = workspace.join(".dg-base-url");
     let s = fs::read_to_string(p).ok()?;
     let line = s.lines().next()?.trim();
@@ -171,6 +393,10 @@ fn read_workspace_base_url(workspace: &std::path::Path) -> Option<String> {
     }
     Some(line.to_string())
 }
+
+// =============================================================================
+// URL / パスユーティリティ
+// =============================================================================
 
 fn extract_url_from_parts(parts: &[String]) -> Option<String> {
     parts
@@ -187,7 +413,6 @@ fn extract_path(url: &str) -> Option<String> {
     Some(path.to_string())
 }
 
-/// URL パスをファイル名用スラグに変換する（例: "/api/v1/articles" → "api_v1_articles"）
 fn path_to_slug(path: &str) -> String {
     let slug: String = path
         .split('/')
@@ -197,47 +422,55 @@ fn path_to_slug(path: &str) -> String {
         .chars()
         .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
         .collect();
-    if slug.is_empty() { "diagram".to_string() } else { slug }
+    if slug.is_empty() {
+        "diagram".to_string()
+    } else {
+        slug
+    }
 }
 
-/// curl 引数から HTTP メソッドを推定する（小文字で返す）
 fn detect_http_method(parts: &[String]) -> String {
     let mut i = 0;
     while i < parts.len() {
-        let arg = &parts[i];
-        if (arg == "-X" || arg == "--request") && i + 1 < parts.len() {
+        if (parts[i] == "-X" || parts[i] == "--request") && i + 1 < parts.len() {
             return parts[i + 1].to_lowercase();
         }
         i += 1;
     }
     if parts.iter().any(|a| {
-        a == "-d" || a == "--data" || a == "--data-raw"
-            || a == "--data-binary" || a == "--data-urlencode"
+        a == "-d"
+            || a == "--data"
+            || a == "--data-raw"
+            || a == "--data-binary"
+            || a == "--data-urlencode"
     }) {
         return "post".to_string();
     }
     "get".to_string()
 }
 
-/// 現在日時を "YYYYMMDD_HHMMSS" 形式で返す
 fn timestamp_suffix() -> String {
-    let out = Command::new("date")
+    Command::new("date")
         .arg("+%Y%m%d_%H%M%S")
         .output()
-        .ok();
-    match out {
-        Some(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
-        _ => "00000000_000000".to_string(),
-    }
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "00000000_000000".to_string())
 }
 
-/// curl 引数中のトークン・Cookie 等の秘匿値を **** に置き換える
+// =============================================================================
+// 秘匿処理
+// =============================================================================
+
 fn redact_curl_line(parts: &[String]) -> String {
     let sensitive_headers = [
-        "authorization", "cookie", "set-cookie",
-        "x-csrf-token", "x-api-key", "x-access-token",
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "x-csrf-token",
+        "x-api-key",
+        "x-access-token",
     ];
     let sensitive_flags = ["-b", "--cookie", "-u", "--user"];
 
@@ -274,11 +507,16 @@ fn redact_curl_line(parts: &[String]) -> String {
     format!("curl {}", result.join(" "))
 }
 
-/// URL のクエリパラメータから秘匿すべき値を **** に置き換える
 fn redact_url_params(url: &str) -> String {
     let sensitive_keys = [
-        "token", "access_token", "api_key", "apikey",
-        "secret", "password", "key", "auth",
+        "token",
+        "access_token",
+        "api_key",
+        "apikey",
+        "secret",
+        "password",
+        "key",
+        "auth",
     ];
     if let Some(q) = url.find('?') {
         let (base, query) = url.split_at(q + 1);
@@ -307,18 +545,9 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn resolve_workspace() -> PathBuf {
-    if let Ok(p) = env::var("DG_WORKSPACE") {
-        return PathBuf::from(p);
-    }
-    if let Ok(home) = env::var("HOME") {
-        let tech = PathBuf::from(home).join("Projects/tech-index");
-        if tech.is_dir() {
-            return tech;
-        }
-    }
-    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-}
+// =============================================================================
+// Claude CLI 連携
+// =============================================================================
 
 fn resolve_claude_cli() -> PathBuf {
     if let Ok(p) = env::var("CLAUDE_CLI") {
@@ -330,7 +559,45 @@ fn resolve_claude_cli() -> PathBuf {
     PathBuf::from("claude")
 }
 
-fn build_agent_prompt(curl_line: &str) -> String {
+fn build_agent_prompt(curl_line: &str, diagram_type: &str) -> String {
+    let (directive, type_desc) = match diagram_type {
+        "sequence" => (
+            "sequenceDiagram",
+            "クライアント・コントローラ・モデル・DB 間の処理の流れをシーケンス図で表現する。\
+             参加者（participant）には役割名を付け、`rect` でまとまりを囲んで日本語の注釈を付ける。",
+        ),
+        "activity" => (
+            "flowchart TD",
+            "処理のアクティビティをフローチャートで表現する。\
+             開始は `([開始])` 、終了は `([終了])` の丸角ノードにし、\
+             分岐には菱形 `{条件}` を使う。",
+        ),
+        "component" => (
+            "graph TD",
+            "システムのコンポーネント構成と依存関係をコンポーネント図で表現する。\
+             コンポーネントは `[コンポーネント名]` で表し、依存を矢印で結ぶ。",
+        ),
+        "state" => (
+            "stateDiagram-v2",
+            "リソースの状態遷移を状態遷移図で表現する。\
+             `[*]` を開始・終了に使い、各状態間のイベント／条件をラベルに書く。",
+        ),
+        _ => (
+            "flowchart TD",
+            "処理の流れをフローチャートで表現する。",
+        ),
+    };
+
+    let subgraph_rule = if diagram_type == "sequence" {
+        "処理のまとまりごとに `rect rgb(240,248,255)` で囲み、\
+         直前に `Note over ...: まとまりの説明` を入れる。"
+    } else if diagram_type == "state" {
+        "関連する状態を `state \"説明\" as グループ名` でまとめる。"
+    } else {
+        "処理のまとまりごとに `subgraph` で囲み、簡潔な日本語で名前を付ける\
+         （例: `subgraph 認証チェック`）。各 subgraph の直後に `%% ...` で一行の補足説明を入れる。"
+    };
+
     format!(
         r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
 
@@ -338,13 +605,14 @@ fn build_agent_prompt(curl_line: &str) -> String {
 
 1. `config/routes.rb` から該当するルートと `Controller#action` を特定する（GET/POST 等はリクエストから推測）。
 2. 該当コントローラと、そこから呼ばれる主要なモデル/スコープ/関連をコードに基づいて要約する。
-3. 処理の流れを **Mermaid の flowchart（`flowchart TD`）** で表現する。
+3. {type_desc}
 
 出力ルール（厳守）:
 - 応答は **```mermaid で始まるフェンス付きコードブロック 1 つだけ**。その前後に説明文・見出し・箇条書きを書かない。
+- 図は **`{directive}`** で始める。
 - Mermaid は v11 でパース可能な記法にする。ノードラベルに `()` `:` `#` など記号が多い場合は `["..."]` 形式のラベルを使う。
 - ルートが特定できない場合は「ルート不明」として分岐を書く。
-- 処理のまとまりごとに `subgraph` で囲み、そのまとまりが何をしているか簡潔な日本語で名前を付ける（例: `subgraph 認証チェック`, `subgraph DB問い合わせ`）。各 subgraph の直後に `%% ...` で一行の補足説明を入れる。
+- {subgraph_rule}
 - 図中にトークン・Cookie・セッション ID・API キー・パスワード等の秘匿情報を一切含めない。ヘッダー値やパラメータ値を表示する必要がある場合は `****` に置き換える。
 
 ユーザー入力（curl 全体）:
@@ -353,9 +621,13 @@ fn build_agent_prompt(curl_line: &str) -> String {
     )
 }
 
-fn run_claude_agent(workspace: &std::path::Path, curl_line: &str) -> Result<String, String> {
+fn run_claude_agent(
+    workspace: &std::path::Path,
+    curl_line: &str,
+    diagram_type: &str,
+) -> Result<String, String> {
     let claude = resolve_claude_cli();
-    let prompt = build_agent_prompt(curl_line);
+    let prompt = build_agent_prompt(curl_line, diagram_type);
 
     let model = env::var("DG_CLAUDE_MODEL")
         .ok()
@@ -388,6 +660,10 @@ fn run_claude_agent(workspace: &std::path::Path, curl_line: &str) -> Result<Stri
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+// =============================================================================
+// Mermaid 抽出 / HTML 生成
+// =============================================================================
+
 fn extract_mermaid_block(text: &str) -> Option<String> {
     let markers = ["```mermaid\n", "```mermaid\r\n", "```mermaid\r"];
     for m in markers {
@@ -412,14 +688,6 @@ fn extract_mermaid_block(text: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn desktop_path(filename: &str) -> Option<PathBuf> {
-    let home = env::var_os("HOME")?;
-    let mut p = PathBuf::from(home);
-    p.push("Desktop");
-    p.push(filename);
-    Some(p)
 }
 
 fn mermaid_html_page(title: &str, mermaid: &str, curl_line: &str) -> String {
