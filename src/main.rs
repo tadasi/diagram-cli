@@ -74,6 +74,8 @@ fn main() {
 
     let is_curl = is_curl_like(&input);
 
+    eprintln!("コード分析中……");
+
     // --- コード解析: Claude CLI で Mermaid 図を生成する ---
     let agent_out = if is_curl {
         claude::run_claude_agent(&workspace, &input, &config.diagram_type)
@@ -144,6 +146,8 @@ fn main() {
         eprintln!("dg: failed to write {}: {e}", html_path.display());
         std::process::exit(1);
     }
+
+    eprintln!("完了しました。出力内容を確認してください。");
 
     // --- ブラウザ表示 ---
     let status = Command::new("open").arg(&html_path).status();
