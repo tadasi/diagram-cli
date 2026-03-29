@@ -84,8 +84,8 @@ fn resolve_base_url(workspace: &Path) -> Option<String> {
 pub fn extract_url_from_parts(parts: &[String]) -> Option<String> {
     parts
         .iter()
-        .find(|a| a.starts_with("http://") || a.starts_with("https://"))
         .map(|s| s.trim_matches('\'').trim_matches('"').to_string())
+        .find(|a| a.starts_with("http://") || a.starts_with("https://"))
 }
 
 pub fn extract_path(url: &str) -> Option<String> {
@@ -98,7 +98,7 @@ pub fn extract_path(url: &str) -> Option<String> {
 pub fn path_to_slug(path: &str) -> String {
     let slug: String = path
         .split('/')
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && !s.chars().all(|c| c.is_ascii_digit()))
         .collect::<Vec<_>>()
         .join("_")
         .chars()

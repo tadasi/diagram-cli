@@ -39,7 +39,7 @@ fn main() -> Result<()> {
     }
 
     let input = if args.is_empty() {
-        let text = prompt::read_multiline_input();
+        let text = prompt::prompt_input();
         if text.is_empty() {
             bail!("入力がありません");
         }
@@ -50,7 +50,7 @@ fn main() -> Result<()> {
 
     let is_curl = is_curl_like(&input);
 
-    eprintln!("コード分析中……");
+    eprintln!("\nコード分析中……");
 
     let agent_out = claude::run_claude_agent(&workspace, &input, &config.diagram_type, is_curl)?;
 
@@ -97,11 +97,11 @@ fn main() -> Result<()> {
     let html = mermaid::mermaid_html_page(&title, &mermaid_src, &display_input, input_label);
     fs::write(&html_path, html)?;
 
-    eprintln!("完了しました。出力内容を確認してください。");
+    eprintln!("実行が完了しました。出力内容を確認してください。");
 
     let _ = Command::new("open").arg(&html_path).status();
 
-    println!("{}", html_path.display());
+    println!("出力ファイル: {}", html_path.display());
     Ok(())
 }
 

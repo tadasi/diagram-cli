@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 
 use anyhow::Result;
 
@@ -8,7 +8,7 @@ pub fn prompt_line(msg: &str) -> String {
     eprint!("{msg}");
     io::stderr().flush().ok();
     let mut buf = String::new();
-    io::stdin().lock().read_line(&mut buf).ok();
+    io::stdin().read_line(&mut buf).ok();
     buf.trim().to_string()
 }
 
@@ -81,23 +81,26 @@ pub fn run_setup() -> Result<DgConfig> {
     Ok(config)
 }
 
-pub fn read_multiline_input() -> String {
-    eprintln!("分析対象の詳細を以下の形式で指定してください（Enter で改行 / Ctrl+Enter ないし Cmd+Enter で送信）:");
+pub fn prompt_input() -> String {
+    eprintln!("分析対象の詳細を指定してください（Enter で送信）:");
     eprintln!("  API 単位の分析 → curl コマンドを入力");
     eprintln!("  包括的な分析   → 画面操作手順や機能説明を自由テキストで入力");
-    eprintln!("---");
 
-    let mut lines = Vec::new();
-    let stdin = io::stdin();
-    let handle = stdin.lock();
-    for line in handle.lines() {
-        match line {
-            Ok(l) => lines.push(l),
-            Err(_) => break,
+    let mut result = String::new();
+    let mut first = true;
+    loop {
+        let prompt = if first { "> " } else { "  " };
+        first = false;
+        let line = prompt_line(prompt);
+        if line.ends_with('\\') {
+            result.push_str(&line[..line.len() - 1]);
+            result.push(' ');
+        } else {
+            result.push_str(&line);
+            break;
         }
     }
-    eprintln!("---");
-    lines.join("\n").trim().to_string()
+    result.trim().to_string()
 }
 
 pub fn print_config(config: &DgConfig) {
