@@ -2,6 +2,9 @@
 name = "diagram-cli"
 version = "0.1.0"
 edition = "2024"
+description = "AI 連携でシステム図を生成する CLI"
+repository = "https://github.com/tadasi/diagram-cli"
+license = "MIT"
 
 [[bin]]
 name = "dg"

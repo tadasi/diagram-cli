@@ -1,27 +1,79 @@
 # diagram-cli
-AI 連携でシステム図を生成する CLI
 
-## `dg curl`（Cursor Agent）
+AI 連携（Claude Code）で Rails コードを分析し、Mermaid ベースのシステム図を生成する CLI ツール。
 
-受け取った curl 相当の文字列を **Cursor Agent**（`cursor agent --print`）に渡し、Rails ルートとコントローラを読んで **Mermaid** を生成します。生成結果は `~/Desktop/dg_<パス>.mmd` と `.html` に書き、HTML をブラウザで開きます。
+## インストール
 
-前提:
+### 方法 1: インストールスクリプト（推奨）
 
-- **Cursor CLI** が使えること（macOS では通常 `/Applications/Cursor.app/Contents/Resources/app/bin/cursor`）。別パスなら `CURSOR_CLI` を設定。
-- **認証済み**であること（`cursor agent login` 等）。API キーは `CURSOR_API_KEY` でも可（Cursor のドキュメント参照）。
-- 解析対象の Rails リポジトリを **`DG_WORKSPACE`** で指定（未設定時は `~/Projects/tech-index` が存在すればそれ、なければカレントディレクトリ）。
-- **`dg` は `cursor agent` に `--model auto` を付けます**（無料プランの Auto と整合）。別モデルを使う場合は `DG_CURSOR_MODEL` を設定。
+Rust 不要。ビルド済みバイナリをダウンロードして配置します。
 
 ```bash
-export DG_WORKSPACE="$HOME/Projects/tech-index"
-# 従来どおり curl 形式
+curl -fsSL https://raw.githubusercontent.com/tadasi/diagram-cli/main/install.sh | bash
+```
+
+インストール先を変更する場合:
+
+```bash
+DG_INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/tadasi/diagram-cli/main/install.sh | bash
+```
+
+### 方法 2: cargo install（Rust ツールチェインがある場合）
+
+```bash
+cargo install --git https://github.com/tadasi/diagram-cli.git
+```
+
+### 前提条件
+
+- **Claude Code CLI** (`claude`) がインストール済みで PATH に通っていること
+- 解析対象の Rails リポジトリがローカルに存在すること
+
+## セットアップ
+
+```bash
+dg init   # 対話形式で対象ディレクトリ・図の種類・出力先を設定
+```
+
+## 使い方
+
+```bash
+dg                          # 対話形式で入力（curl / 自由テキスト）
+dg init                     # 初期設定（対象ディレクトリ・図の種類・出力先）
+dg [curl args...] <url>     # API 単位のシステム図を生成
+dg <自由テキスト>           # 画面操作手順等から包括的なシステム図を生成
+```
+
+### 例
+
+```bash
+# curl 形式で API のシステム図を生成
 dg curl --location 'http://localhost:3000/tech_book_terms'
 
-# 先頭の curl は省略可（任意のルートの URL で可）
-dg --location 'http://localhost:3000/tech_articles'
+# URL だけでも可
 dg 'http://localhost:3000/tech_reference_terms'
 
-# ベース URL を環境変数またはリポジトリ直下の .dg-base-url（1 行）で指定するとパスだけで可変に指定できる
+# ベース URL を環境変数で設定するとパスだけで指定可能
 export DG_BASE_URL='http://localhost:3000'
 dg /tech_articles
+
+# 自由テキストで包括的なシステム図を生成
+dg "ユーザーがログインしてから記事を投稿するまでのフロー"
 ```
+
+## 環境変数
+
+| 変数 | 説明 |
+|---|---|
+| `DG_BASE_URL` | パスだけ渡すときのオリジン（例: `http://localhost:3000`） |
+| `DG_CLAUDE_MODEL` | Claude CLI の `--model`（既定: `claude-sonnet-4-6`） |
+| `CLAUDE_CLI` | `claude` 実行ファイルのパス（既定: PATH から解決） |
+
+## リリース手順（メンテナ向け）
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+タグを push すると GitHub Actions が macOS (Intel/Apple Silicon) と Linux 向けにビルドし、GitHub Release を自動作成します。
