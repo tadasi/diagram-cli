@@ -1,29 +1,12 @@
 use crate::sanitize::html_escape;
 
 pub fn extract_mermaid_block(text: &str) -> Option<String> {
-    let markers = ["```mermaid\n", "```mermaid\r\n", "```mermaid\r"];
-    for m in markers {
-        if let Some(i) = text.find(m) {
-            let rest = &text[i + m.len()..];
-            if let Some(end) = rest.find("```") {
-                let body = rest[..end].trim();
-                if !body.is_empty() {
-                    return Some(body.to_string());
-                }
-            }
-        }
-    }
-    if let Some(i) = text.find("```mermaid") {
-        let rest = &text[i + "```mermaid".len()..];
-        let rest = rest.trim_start_matches(['\r', '\n', ' ']);
-        if let Some(end) = rest.find("```") {
-            let body = rest[..end].trim();
-            if !body.is_empty() {
-                return Some(body.to_string());
-            }
-        }
-    }
-    None
+    let start = text.find("```mermaid")?;
+    let rest = &text[start + "```mermaid".len()..];
+    let rest = rest.trim_start_matches(['\r', '\n', ' ']);
+    let end = rest.find("```")?;
+    let body = rest[..end].trim();
+    if body.is_empty() { None } else { Some(body.to_string()) }
 }
 
 pub fn mermaid_html_page(

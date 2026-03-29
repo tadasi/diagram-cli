@@ -1,9 +1,10 @@
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
-/// 入力テキストが curl コマンドかどうかを判定する
+use anyhow::{bail, Result};
+use chrono::Local;
+
 pub fn is_curl_like(input: &str) -> bool {
     let first = input.trim().lines().next().unwrap_or("").trim();
     first.starts_with("curl ")
@@ -15,7 +16,6 @@ pub fn is_curl_like(input: &str) -> bool {
         || first.starts_with("-H ")
 }
 
-/// 複数行の curl 文字列をパーツに分割する
 pub fn parse_curl_string(input: &str) -> Vec<String> {
     let normalized = input.replace("\\\n", " ").replace("\\\r\n", " ");
     let mut parts: Vec<String> = normalized
@@ -28,19 +28,16 @@ pub fn parse_curl_string(input: &str) -> Vec<String> {
     parts
 }
 
-pub fn resolve_curl_parts(
-    args: Vec<String>,
-    workspace: &Path,
-) -> Result<Vec<String>, String> {
+pub fn resolve_curl_parts(args: Vec<String>, workspace: &Path) -> Result<Vec<String>> {
     if args.is_empty() {
-        return Err("no arguments".to_string());
+        bail!("no arguments");
     }
 
     let mut rest = args;
     if rest[0] == "curl" {
         rest.remove(0);
         if rest.is_empty() {
-            return Err("need URL or args after 'curl'".to_string());
+            bail!("need URL or args after 'curl'");
         }
         return Ok(rest);
     }
@@ -56,9 +53,8 @@ pub fn resolve_curl_parts(
         return Ok(rest);
     }
 
-    let base = resolve_base_url(workspace);
-    if let Some(base) = base {
-        let base = base.trim_end_matches('/').to_string();
+    if let Some(base) = resolve_base_url(workspace) {
+        let base = base.trim_end_matches('/');
         if rest.len() == 1 {
             let p = rest[0].trim();
             let path = if p.starts_with('/') {
@@ -66,15 +62,11 @@ pub fn resolve_curl_parts(
             } else {
                 format!("/{}", p.trim_start_matches('/'))
             };
-            let url = format!("{base}{path}");
-            return Ok(vec!["--location".to_string(), url]);
+            return Ok(vec!["--location".to_string(), format!("{base}{path}")]);
         }
     }
 
-    Err(
-        "need a URL (http/https), or --location/-L <url>, or one path with DG_BASE_URL / .dg-base-url"
-            .to_string(),
-    )
+    bail!("need a URL (http/https), or --location/-L <url>, or one path with DG_BASE_URL / .dg-base-url")
 }
 
 fn resolve_base_url(workspace: &Path) -> Option<String> {
@@ -84,13 +76,9 @@ fn resolve_base_url(workspace: &Path) -> Option<String> {
             return Some(t.to_string());
         }
     }
-    let p = workspace.join(".dg-base-url");
-    let s = fs::read_to_string(p).ok()?;
+    let s = fs::read_to_string(workspace.join(".dg-base-url")).ok()?;
     let line = s.lines().next()?.trim();
-    if line.is_empty() {
-        return None;
-    }
-    Some(line.to_string())
+    if line.is_empty() { None } else { Some(line.to_string()) }
 }
 
 pub fn extract_url_from_parts(parts: &[String]) -> Option<String> {
@@ -104,8 +92,7 @@ pub fn extract_path(url: &str) -> Option<String> {
     let after_scheme = url.split("://").nth(1)?;
     let slash = after_scheme.find('/')?;
     let path_and_more = &after_scheme[slash..];
-    let path = path_and_more.split('?').next().unwrap_or(path_and_more);
-    Some(path.to_string())
+    Some(path_and_more.split('?').next().unwrap_or(path_and_more).to_string())
 }
 
 pub fn path_to_slug(path: &str) -> String {
@@ -117,27 +104,20 @@ pub fn path_to_slug(path: &str) -> String {
         .chars()
         .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
         .collect();
-    if slug.is_empty() {
-        "diagram".to_string()
-    } else {
-        slug
-    }
+    if slug.is_empty() { "diagram".to_string() } else { slug }
 }
 
 pub fn detect_http_method(parts: &[String]) -> String {
-    let mut i = 0;
-    while i < parts.len() {
-        if (parts[i] == "-X" || parts[i] == "--request") && i + 1 < parts.len() {
-            return parts[i + 1].to_lowercase();
+    for pair in parts.windows(2) {
+        if pair[0] == "-X" || pair[0] == "--request" {
+            return pair[1].to_lowercase();
         }
-        i += 1;
     }
     if parts.iter().any(|a| {
-        a == "-d"
-            || a == "--data"
-            || a == "--data-raw"
-            || a == "--data-binary"
-            || a == "--data-urlencode"
+        matches!(
+            a.as_str(),
+            "-d" | "--data" | "--data-raw" | "--data-binary" | "--data-urlencode"
+        )
     }) {
         return "post".to_string();
     }
@@ -145,11 +125,5 @@ pub fn detect_http_method(parts: &[String]) -> String {
 }
 
 pub fn timestamp_suffix() -> String {
-    Command::new("date")
-        .arg("+%Y%m%d_%H%M%S")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "00000000_000000".to_string())
+    Local::now().format("%Y%m%d_%H%M%S").to_string()
 }

@@ -9,63 +9,39 @@ use std::env;
 use std::fs;
 use std::process::Command;
 
+use anyhow::{bail, Context, Result};
 use config::DgConfig;
 use curl::{
     detect_http_method, extract_path, extract_url_from_parts, is_curl_like, parse_curl_string,
     path_to_slug, resolve_curl_parts, timestamp_suffix,
 };
 
-fn main() {
+fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    // --- dg init / --help ---
     match args.first().map(|s| s.as_str()) {
         Some("init") => {
-            prompt::run_setup();
-            return;
+            prompt::run_setup()?;
+            return Ok(());
         }
         Some("--help" | "-h") => {
             print_usage();
-            return;
+            return Ok(());
         }
         _ => {}
     }
 
-    // --- 設定の読み込み / 未初期化なら対話セットアップ → 確認ループ ---
-    let config = loop {
-        let c = match DgConfig::load() {
-            Some(c) => c,
-            None => {
-                eprintln!("dg: 初期設定が見つかりません。セットアップを開始します。\n");
-                prompt::run_setup()
-            }
-        };
-        eprintln!("指定のコードを分析し、システム図を出力します。");
-        eprintln!("設定を確認してください。\n");
-        prompt::print_config(&c);
-        if prompt::prompt_yn(
-            "設定を変更しますか？ (Y/N): ",
-         ) {
-            prompt::run_setup();
-        } else {
-            eprintln!();
-            break c;
-        }
-    };
-
+    let config = load_config_interactive()?;
     let workspace = config.workspace_abs();
 
     if !workspace.exists() {
-        eprintln!("dg: workspace does not exist: {}", workspace.display());
-        std::process::exit(2);
+        bail!("workspace does not exist: {}", workspace.display());
     }
 
-    // --- 入力: CLI 引数 or 対話入力 ---
     let input = if args.is_empty() {
         let text = prompt::read_multiline_input();
         if text.is_empty() {
-            eprintln!("dg: 入力がありません");
-            std::process::exit(2);
+            bail!("入力がありません");
         }
         text
     } else {
@@ -76,35 +52,19 @@ fn main() {
 
     eprintln!("コード分析中……");
 
-    // --- コード解析: Claude CLI で Mermaid 図を生成する ---
-    let agent_out = if is_curl {
-        claude::run_claude_agent(&workspace, &input, &config.diagram_type)
-    } else {
-        claude::run_claude_agent_freetext(&workspace, &input, &config.diagram_type)
-    }
-    .unwrap_or_else(|e| {
-        eprintln!("dg: {e}");
-        std::process::exit(1);
-    });
+    let agent_out = claude::run_claude_agent(&workspace, &input, &config.diagram_type, is_curl)?;
 
-    let mermaid_src = mermaid::extract_mermaid_block(&agent_out).unwrap_or_else(|| {
-        eprintln!(
-            "dg: no Mermaid code block in Claude output. Raw output follows:\n---\n{agent_out}\n---"
-        );
-        std::process::exit(1);
-    });
+    let mermaid_src = mermaid::extract_mermaid_block(&agent_out).context(format!(
+        "no Mermaid code block in Claude output. Raw output follows:\n---\n{agent_out}\n---"
+    ))?;
 
-    // --- ファイル出力 ---
     let ts = timestamp_suffix();
 
     let (title, base_name, display_input, input_label) = if is_curl {
         let parts = if args.is_empty() {
             parse_curl_string(&input)
         } else {
-            match resolve_curl_parts(args, &workspace) {
-                Ok(p) => p,
-                Err(_) => parse_curl_string(&input),
-            }
+            resolve_curl_parts(args, &workspace).unwrap_or_else(|_| parse_curl_string(&input))
         };
         let url = extract_url_from_parts(&parts).unwrap_or_default();
         let path = extract_path(&url).unwrap_or_else(|| "/".to_string());
@@ -127,37 +87,43 @@ fn main() {
     };
 
     let out_dir = config.output_dir_abs();
-    if !out_dir.exists() {
-        if let Err(e) = fs::create_dir_all(&out_dir) {
-            eprintln!("dg: could not create output dir {}: {e}", out_dir.display());
-            std::process::exit(2);
-        }
-    }
+    fs::create_dir_all(&out_dir)
+        .with_context(|| format!("could not create output dir {}", out_dir.display()))?;
 
     let mmd_path = out_dir.join(format!("{base_name}.mmd"));
-    if let Err(e) = fs::write(&mmd_path, &mermaid_src) {
-        eprintln!("dg: failed to write {}: {e}", mmd_path.display());
-        std::process::exit(1);
-    }
+    fs::write(&mmd_path, &mermaid_src)?;
 
     let html_path = out_dir.join(format!("{base_name}.html"));
     let html = mermaid::mermaid_html_page(&title, &mermaid_src, &display_input, input_label);
-    if let Err(e) = fs::write(&html_path, html) {
-        eprintln!("dg: failed to write {}: {e}", html_path.display());
-        std::process::exit(1);
-    }
+    fs::write(&html_path, html)?;
 
     eprintln!("完了しました。出力内容を確認してください。");
 
-    // --- ブラウザ表示 ---
-    let status = Command::new("open").arg(&html_path).status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => eprintln!("dg: open failed with exit code: {s}"),
-        Err(e) => eprintln!("dg: failed to run open: {e}"),
-    }
+    let _ = Command::new("open").arg(&html_path).status();
 
     println!("{}", html_path.display());
+    Ok(())
+}
+
+fn load_config_interactive() -> Result<DgConfig> {
+    loop {
+        let c = match DgConfig::load() {
+            Some(c) => c,
+            None => {
+                eprintln!("dg: 初期設定が見つかりません。セットアップを開始します。\n");
+                prompt::run_setup()?
+            }
+        };
+        eprintln!("指定のコードを分析し、システム図を出力します。");
+        eprintln!("設定を確認してください。\n");
+        prompt::print_config(&c);
+        if prompt::prompt_yn("設定を変更しますか？ (Y/N): ") {
+            prompt::run_setup()?;
+        } else {
+            eprintln!();
+            return Ok(c);
+        }
+    }
 }
 
 fn print_usage() {

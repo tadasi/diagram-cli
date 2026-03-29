@@ -2,14 +2,14 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use anyhow::{bail, Context, Result};
+
 fn resolve_claude_cli() -> PathBuf {
-    if let Ok(p) = env::var("CLAUDE_CLI") {
-        let pb = PathBuf::from(p.trim());
-        if pb.exists() {
-            return pb;
-        }
-    }
-    PathBuf::from("claude")
+    env::var("CLAUDE_CLI")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from("claude"))
 }
 
 fn diagram_type_info(diagram_type: &str) -> (&'static str, &'static str, &'static str) {
@@ -41,21 +41,25 @@ fn diagram_type_info(diagram_type: &str) -> (&'static str, &'static str, &'stati
         ),
     };
 
-    let subgraph_rule = if diagram_type == "sequence" {
-        "処理のまとまりごとに `rect rgb(240,248,255)` で囲み、\
-         直前に `Note over ...: まとまりの説明` を入れる。"
-    } else if diagram_type == "state" {
-        "関連する状態を `state \"説明\" as グループ名` でまとめる。"
-    } else {
-        "処理のまとまりごとに `subgraph` で囲み、簡潔な日本語で名前を付ける\
-         （例: `subgraph 認証チェック`）。各 subgraph の直後に `%% ...` で一行の補足説明を入れる。"
+    let subgraph_rule = match diagram_type {
+        "sequence" => {
+            "処理のまとまりごとに `rect rgb(240,248,255)` で囲み、\
+             直前に `Note over ...: まとまりの説明` を入れる。"
+        }
+        "state" => "関連する状態を `state \"説明\" as グループ名` でまとめる。",
+        _ => {
+            "処理のまとまりごとに `subgraph` で囲み、簡潔な日本語で名前を付ける\
+             （例: `subgraph 認証チェック`）。各 subgraph の直後に `%% ...` で一行の補足説明を入れる。"
+        }
     };
 
     (directive, type_desc, subgraph_rule)
 }
 
-fn output_rules(directive: &str, subgraph_rule: &str) -> String {
-    format!(
+fn build_prompt(input: &str, diagram_type: &str, is_curl: bool) -> String {
+    let (directive, type_desc, subgraph_rule) = diagram_type_info(diagram_type);
+
+    let rules = format!(
         r#"出力ルール（厳守）:
 - 応答は **```mermaid で始まるフェンス付きコードブロック 1 つだけ**。その前後に説明文・見出し・箇条書きを書かない。
 - 図は **`{directive}`** で始める。
@@ -63,15 +67,11 @@ fn output_rules(directive: &str, subgraph_rule: &str) -> String {
 - ルートが特定できない場合は「ルート不明」として分岐を書く。
 - {subgraph_rule}
 - 図中にトークン・Cookie・セッション ID・API キー・パスワード等の秘匿情報を一切含めない。ヘッダー値やパラメータ値を表示する必要がある場合は `****` に置き換える。"#
-    )
-}
+    );
 
-fn build_curl_prompt(curl_line: &str, diagram_type: &str) -> String {
-    let (directive, type_desc, subgraph_rule) = diagram_type_info(diagram_type);
-    let rules = output_rules(directive, subgraph_rule);
-
-    format!(
-        r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
+    if is_curl {
+        format!(
+            r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
 
 次の HTTP リクエスト（ユーザーが入力した curl 相当の文字列全体）を解釈してください。
 
@@ -82,17 +82,12 @@ fn build_curl_prompt(curl_line: &str, diagram_type: &str) -> String {
 {rules}
 
 ユーザー入力（curl 全体）:
-{curl_line}
+{input}
 "#
-    )
-}
-
-fn build_freetext_prompt(description: &str, diagram_type: &str) -> String {
-    let (directive, type_desc, subgraph_rule) = diagram_type_info(diagram_type);
-    let rules = output_rules(directive, subgraph_rule);
-
-    format!(
-        r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
+        )
+    } else {
+        format!(
+            r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
 
 以下のユーザーの説明を解釈し、関連するコードを特定してシステム図を生成してください。
 
@@ -103,13 +98,20 @@ fn build_freetext_prompt(description: &str, diagram_type: &str) -> String {
 {rules}
 
 ユーザーの説明:
-{description}
+{input}
 "#
-    )
+        )
+    }
 }
 
-fn invoke_claude(workspace: &Path, prompt: &str) -> Result<String, String> {
+pub fn run_claude_agent(
+    workspace: &Path,
+    input: &str,
+    diagram_type: &str,
+    is_curl: bool,
+) -> Result<String> {
     let claude = resolve_claude_cli();
+    let prompt = build_prompt(input, diagram_type, is_curl);
 
     let model = env::var("DG_CLAUDE_MODEL")
         .ok()
@@ -130,40 +132,18 @@ fn invoke_claude(workspace: &Path, prompt: &str) -> Result<String, String> {
             &model,
             "--max-turns",
             &max_turns,
-            prompt,
+            &prompt,
         ])
         .current_dir(workspace)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| format!("failed to spawn Claude CLI ({claude:?}): {e}"))?;
+        .with_context(|| format!("failed to spawn Claude CLI ({claude:?})"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "claude exited with {}: {}",
-            output.status,
-            stderr.trim()
-        ));
+        bail!("claude exited with {}: {}", output.status, stderr.trim());
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-pub fn run_claude_agent(
-    workspace: &Path,
-    curl_line: &str,
-    diagram_type: &str,
-) -> Result<String, String> {
-    let prompt = build_curl_prompt(curl_line, diagram_type);
-    invoke_claude(workspace, &prompt)
-}
-
-pub fn run_claude_agent_freetext(
-    workspace: &Path,
-    description: &str,
-    diagram_type: &str,
-) -> Result<String, String> {
-    let prompt = build_freetext_prompt(description, diagram_type);
-    invoke_claude(workspace, &prompt)
 }

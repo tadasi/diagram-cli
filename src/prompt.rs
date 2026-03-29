@@ -1,5 +1,7 @@
 use std::io::{self, BufRead, Write};
 
+use anyhow::Result;
+
 use crate::config::{home_dir, DgConfig, DIAGRAM_TYPES};
 
 pub fn prompt_line(msg: &str) -> String {
@@ -21,11 +23,10 @@ pub fn prompt_yn(msg: &str) -> bool {
     }
 }
 
-pub fn run_setup() -> DgConfig {
+pub fn run_setup() -> Result<DgConfig> {
     let prev = DgConfig::load();
     eprintln!("=== dg: 初期設定 ===\n");
 
-    // 1. ワークスペース
     let default_ws = prev.as_ref().map(|c| c.workspace.as_str()).unwrap_or("");
     eprintln!("対象プロジェクトディレクトリ（ルートからの相対パス）");
     eprintln!("  例: Projects/your-project");
@@ -45,7 +46,6 @@ pub fn run_setup() -> DgConfig {
         break input;
     };
 
-    // 2. 図の種類
     let default_dt = prev.as_ref().map(|c| c.diagram_type.as_str()).unwrap_or("flowchart");
     let default_idx = DIAGRAM_TYPES
         .iter()
@@ -68,7 +68,6 @@ pub fn run_setup() -> DgConfig {
         eprintln!("  1〜{} の番号を入力してください。", DIAGRAM_TYPES.len());
     };
 
-    // 3. 出力先
     let default_od = prev.as_ref().map(|c| c.output_dir.as_str()).unwrap_or("Desktop");
     eprintln!("\nファイルの出力先（ルートからの相対パス）");
     let output_dir = {
@@ -77,12 +76,9 @@ pub fn run_setup() -> DgConfig {
     };
 
     let config = DgConfig { workspace, diagram_type, output_dir };
-    if let Err(e) = config.save() {
-        eprintln!("\ndg: 設定の保存に失敗: {e}");
-        std::process::exit(1);
-    }
+    config.save()?;
     eprintln!("\n設定を保存しました。");
-    config
+    Ok(config)
 }
 
 pub fn read_multiline_input() -> String {
