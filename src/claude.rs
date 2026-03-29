@@ -12,7 +12,7 @@ fn resolve_claude_cli() -> PathBuf {
     PathBuf::from("claude")
 }
 
-fn build_agent_prompt(curl_line: &str, diagram_type: &str) -> String {
+fn diagram_type_info(diagram_type: &str) -> (&'static str, &'static str, &'static str) {
     let (directive, type_desc) = match diagram_type {
         "sequence" => (
             "sequenceDiagram",
@@ -51,6 +51,25 @@ fn build_agent_prompt(curl_line: &str, diagram_type: &str) -> String {
          （例: `subgraph 認証チェック`）。各 subgraph の直後に `%% ...` で一行の補足説明を入れる。"
     };
 
+    (directive, type_desc, subgraph_rule)
+}
+
+fn output_rules(directive: &str, subgraph_rule: &str) -> String {
+    format!(
+        r#"出力ルール（厳守）:
+- 応答は **```mermaid で始まるフェンス付きコードブロック 1 つだけ**。その前後に説明文・見出し・箇条書きを書かない。
+- 図は **`{directive}`** で始める。
+- Mermaid は v11 でパース可能な記法にする。ノードラベルに `()` `:` `#` など記号が多い場合は `["..."]` 形式のラベルを使う。
+- ルートが特定できない場合は「ルート不明」として分岐を書く。
+- {subgraph_rule}
+- 図中にトークン・Cookie・セッション ID・API キー・パスワード等の秘匿情報を一切含めない。ヘッダー値やパラメータ値を表示する必要がある場合は `****` に置き換える。"#
+    )
+}
+
+fn build_curl_prompt(curl_line: &str, diagram_type: &str) -> String {
+    let (directive, type_desc, subgraph_rule) = diagram_type_info(diagram_type);
+    let rules = output_rules(directive, subgraph_rule);
+
     format!(
         r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
 
@@ -60,13 +79,7 @@ fn build_agent_prompt(curl_line: &str, diagram_type: &str) -> String {
 2. 該当コントローラと、そこから呼ばれる主要なモデル/スコープ/関連をコードに基づいて要約する。
 3. {type_desc}
 
-出力ルール（厳守）:
-- 応答は **```mermaid で始まるフェンス付きコードブロック 1 つだけ**。その前後に説明文・見出し・箇条書きを書かない。
-- 図は **`{directive}`** で始める。
-- Mermaid は v11 でパース可能な記法にする。ノードラベルに `()` `:` `#` など記号が多い場合は `["..."]` 形式のラベルを使う。
-- ルートが特定できない場合は「ルート不明」として分岐を書く。
-- {subgraph_rule}
-- 図中にトークン・Cookie・セッション ID・API キー・パスワード等の秘匿情報を一切含めない。ヘッダー値やパラメータ値を表示する必要がある場合は `****` に置き換える。
+{rules}
 
 ユーザー入力（curl 全体）:
 {curl_line}
@@ -74,18 +87,40 @@ fn build_agent_prompt(curl_line: &str, diagram_type: &str) -> String {
     )
 }
 
-pub fn run_claude_agent(
-    workspace: &Path,
-    curl_line: &str,
-    diagram_type: &str,
-) -> Result<String, String> {
+fn build_freetext_prompt(description: &str, diagram_type: &str) -> String {
+    let (directive, type_desc, subgraph_rule) = diagram_type_info(diagram_type);
+    let rules = output_rules(directive, subgraph_rule);
+
+    format!(
+        r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
+
+以下のユーザーの説明を解釈し、関連するコードを特定してシステム図を生成してください。
+
+1. 説明に含まれる画面操作・機能・処理を特定し、関連するルート・コントローラ・モデル・ビューをコードに基づいて特定する。
+2. 特定した処理の流れを、コードの実装に基づいて正確に把握する。
+3. {type_desc}
+
+{rules}
+
+ユーザーの説明:
+{description}
+"#
+    )
+}
+
+fn invoke_claude(workspace: &Path, prompt: &str) -> Result<String, String> {
     let claude = resolve_claude_cli();
-    let prompt = build_agent_prompt(curl_line, diagram_type);
 
     let model = env::var("DG_CLAUDE_MODEL")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+
+    let max_turns = env::var("DG_MAX_TURNS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(6)
+        .to_string();
 
     let output = Command::new(&claude)
         .args([
@@ -93,7 +128,9 @@ pub fn run_claude_agent(
             "--dangerously-skip-permissions",
             "--model",
             &model,
-            &prompt,
+            "--max-turns",
+            &max_turns,
+            prompt,
         ])
         .current_dir(workspace)
         .stdout(Stdio::piped())
@@ -111,4 +148,22 @@ pub fn run_claude_agent(
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub fn run_claude_agent(
+    workspace: &Path,
+    curl_line: &str,
+    diagram_type: &str,
+) -> Result<String, String> {
+    let prompt = build_curl_prompt(curl_line, diagram_type);
+    invoke_claude(workspace, &prompt)
+}
+
+pub fn run_claude_agent_freetext(
+    workspace: &Path,
+    description: &str,
+    diagram_type: &str,
+) -> Result<String, String> {
+    let prompt = build_freetext_prompt(description, diagram_type);
+    invoke_claude(workspace, &prompt)
 }

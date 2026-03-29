@@ -26,9 +26,15 @@ pub fn extract_mermaid_block(text: &str) -> Option<String> {
     None
 }
 
-pub fn mermaid_html_page(title: &str, mermaid: &str, curl_line: &str) -> String {
-    let escaped_curl = html_escape(curl_line);
+pub fn mermaid_html_page(
+    title: &str,
+    mermaid: &str,
+    input_text: &str,
+    input_label: &str,
+) -> String {
+    let escaped_input = html_escape(input_text);
     let escaped_title = html_escape(title);
+    let escaped_label = html_escape(input_label);
     format!(
         r###"<!DOCTYPE html>
 <html lang="ja">
@@ -41,8 +47,8 @@ pub fn mermaid_html_page(title: &str, mermaid: &str, curl_line: &str) -> String 
   <body class="min-w-[1280px] min-h-[720px] m-0 p-0 bg-white">
     <div class="w-full flex flex-col gap-6 p-10">
       <div class="border border-gray-300 rounded-lg px-5 py-4 bg-gray-50">
-        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Request</h3>
-        <code class="text-sm text-gray-800 break-all">{escaped_curl}</code>
+        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{escaped_label}</h3>
+        <pre class="text-sm text-gray-800 break-all whitespace-pre-wrap">{escaped_input}</pre>
       </div>
       <div class="border-2 border-blue-300 rounded-lg p-6 bg-blue-50">
         <h2 class="text-xl font-bold text-blue-900 mb-4">{escaped_title}</h2>

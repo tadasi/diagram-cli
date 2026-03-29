@@ -85,10 +85,29 @@ pub fn run_setup() -> DgConfig {
     config
 }
 
+pub fn read_multiline_input() -> String {
+    eprintln!("分析対象の詳細を以下の形式で指定してください（Enter で改行 / Ctrl+Enter ないし Cmd+Enter で送信）:");
+    eprintln!("  API 単位の分析 → curl コマンドを入力");
+    eprintln!("  包括的な分析   → 画面操作手順や機能説明を自由テキストで入力");
+    eprintln!("---");
+
+    let mut lines = Vec::new();
+    let stdin = io::stdin();
+    let handle = stdin.lock();
+    for line in handle.lines() {
+        match line {
+            Ok(l) => lines.push(l),
+            Err(_) => break,
+        }
+    }
+    eprintln!("---");
+    lines.join("\n").trim().to_string()
+}
+
 pub fn print_config(config: &DgConfig) {
-    eprintln!("--- 現在の設定 ---");
-    eprintln!("  対象ディレクトリ : ~/{}", config.workspace);
-    eprintln!("  図の種類         : {}", config.diagram_type_label());
-    eprintln!("  出力先           : ~/{}", config.output_dir);
-    eprintln!("------------------");
+    eprintln!("--------------現在の設定--------------");
+    eprintln!("  コードの分析対象ディレクトリ : ~/{}", config.workspace);
+    eprintln!("  システム図の種類             : {}", config.diagram_type_label());
+    eprintln!("  出力先                       : ~/{}", config.output_dir);
+    eprintln!("------------------------------------\n");
 }

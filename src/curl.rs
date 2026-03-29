@@ -3,6 +3,31 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+/// 入力テキストが curl コマンドかどうかを判定する
+pub fn is_curl_like(input: &str) -> bool {
+    let first = input.trim().lines().next().unwrap_or("").trim();
+    first.starts_with("curl ")
+        || first.starts_with("http://")
+        || first.starts_with("https://")
+        || first.starts_with("--location")
+        || first.starts_with("-L ")
+        || first.starts_with("-X ")
+        || first.starts_with("-H ")
+}
+
+/// 複数行の curl 文字列をパーツに分割する
+pub fn parse_curl_string(input: &str) -> Vec<String> {
+    let normalized = input.replace("\\\n", " ").replace("\\\r\n", " ");
+    let mut parts: Vec<String> = normalized
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    if parts.first().map(|s| s.as_str()) == Some("curl") {
+        parts.remove(0);
+    }
+    parts
+}
+
 pub fn resolve_curl_parts(
     args: Vec<String>,
     workspace: &Path,
