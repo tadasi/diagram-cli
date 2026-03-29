@@ -5,6 +5,7 @@ use std::process::Command;
 use std::process::Stdio;
 
 fn main() {
+    // --- 引数パース: CLI 引数を curl 形式に正規化し、URL・パスを抽出する ---
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
         print_usage();
@@ -42,6 +43,7 @@ fn main() {
         std::process::exit(2);
     }
 
+    // --- コード解析: Claude CLI で Rails コードを読み、Mermaid flowchart を生成する ---
     let agent_out = run_claude_agent(&workspace, &curl_line).unwrap_or_else(|e| {
         eprintln!("dg: {e}");
         std::process::exit(1);
@@ -52,10 +54,15 @@ fn main() {
         std::process::exit(1);
     });
 
-    let base = path_to_base_name(&path);
-    let title = format!("{base} (from curl)");
-    let mmd_name = format!("dg_{base}.mmd");
-    let html_name = format!("dg_{base}.html");
+    // --- ファイル出力: .mmd と可視化用 HTML を ~/Desktop に書き出す ---
+    let redacted = redact_curl_line(&curl_parts);
+    let slug = path_to_slug(&path);
+    let method = detect_http_method(&curl_parts);
+    let ts = timestamp_suffix();
+    let base_name = format!("dg_{slug}_{method}_{ts}");
+    let title = format!("{slug} ({method})");
+    let mmd_name = format!("{base_name}.mmd");
+    let html_name = format!("{base_name}.html");
 
     let mmd_path = desktop_path(&mmd_name).unwrap_or_else(|| {
         eprintln!("dg: could not resolve ~/Desktop");
@@ -70,12 +77,13 @@ fn main() {
         eprintln!("dg: could not resolve ~/Desktop");
         std::process::exit(2);
     });
-    let html = mermaid_html_page(&title, &mermaid);
+    let html = mermaid_html_page(&title, &mermaid, &redacted);
     if let Err(e) = fs::write(&html_path, html) {
         eprintln!("dg: failed to write {}: {e}", html_path.display());
         std::process::exit(1);
     }
 
+    // --- ブラウザ表示: HTML を open コマンドで開く ---
     let status = Command::new("open").arg(&html_path).status();
     match status {
         Ok(s) if s.success() => {}
@@ -179,16 +187,124 @@ fn extract_path(url: &str) -> Option<String> {
     Some(path.to_string())
 }
 
-fn path_to_base_name(path: &str) -> String {
-    let p = path.trim_end_matches('/');
-    let s = p.rsplit('/').next().unwrap_or("diagram");
-    if s.is_empty() {
-        "diagram".to_string()
-    } else {
-        s.chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-            .collect()
+/// URL パスをファイル名用スラグに変換する（例: "/api/v1/articles" → "api_v1_articles"）
+fn path_to_slug(path: &str) -> String {
+    let slug: String = path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    if slug.is_empty() { "diagram".to_string() } else { slug }
+}
+
+/// curl 引数から HTTP メソッドを推定する（小文字で返す）
+fn detect_http_method(parts: &[String]) -> String {
+    let mut i = 0;
+    while i < parts.len() {
+        let arg = &parts[i];
+        if (arg == "-X" || arg == "--request") && i + 1 < parts.len() {
+            return parts[i + 1].to_lowercase();
+        }
+        i += 1;
     }
+    if parts.iter().any(|a| {
+        a == "-d" || a == "--data" || a == "--data-raw"
+            || a == "--data-binary" || a == "--data-urlencode"
+    }) {
+        return "post".to_string();
+    }
+    "get".to_string()
+}
+
+/// 現在日時を "YYYYMMDD_HHMMSS" 形式で返す
+fn timestamp_suffix() -> String {
+    let out = Command::new("date")
+        .arg("+%Y%m%d_%H%M%S")
+        .output()
+        .ok();
+    match out {
+        Some(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        }
+        _ => "00000000_000000".to_string(),
+    }
+}
+
+/// curl 引数中のトークン・Cookie 等の秘匿値を **** に置き換える
+fn redact_curl_line(parts: &[String]) -> String {
+    let sensitive_headers = [
+        "authorization", "cookie", "set-cookie",
+        "x-csrf-token", "x-api-key", "x-access-token",
+    ];
+    let sensitive_flags = ["-b", "--cookie", "-u", "--user"];
+
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < parts.len() {
+        let arg = &parts[i];
+        if (arg == "-H" || arg == "--header") && i + 1 < parts.len() {
+            let header = &parts[i + 1];
+            if let Some(colon) = header.find(':') {
+                let name = header[..colon].trim().to_lowercase();
+                if sensitive_headers.iter().any(|h| name == *h) {
+                    result.push(arg.clone());
+                    result.push(format!("{}: ****", &header[..colon]));
+                    i += 2;
+                    continue;
+                }
+            }
+            result.push(arg.clone());
+            result.push(parts[i + 1].clone());
+            i += 2;
+        } else if sensitive_flags.iter().any(|f| arg == *f) && i + 1 < parts.len() {
+            result.push(arg.clone());
+            result.push("****".to_string());
+            i += 2;
+        } else if arg.starts_with("http://") || arg.starts_with("https://") {
+            result.push(redact_url_params(arg));
+            i += 1;
+        } else {
+            result.push(arg.clone());
+            i += 1;
+        }
+    }
+    format!("curl {}", result.join(" "))
+}
+
+/// URL のクエリパラメータから秘匿すべき値を **** に置き換える
+fn redact_url_params(url: &str) -> String {
+    let sensitive_keys = [
+        "token", "access_token", "api_key", "apikey",
+        "secret", "password", "key", "auth",
+    ];
+    if let Some(q) = url.find('?') {
+        let (base, query) = url.split_at(q + 1);
+        let redacted: Vec<String> = query
+            .split('&')
+            .map(|pair| {
+                if let Some(eq) = pair.find('=') {
+                    let k = &pair[..eq].to_lowercase();
+                    if sensitive_keys.iter().any(|s| k.contains(s)) {
+                        return format!("{}=****", &pair[..eq]);
+                    }
+                }
+                pair.to_string()
+            })
+            .collect();
+        format!("{}{}", base, redacted.join("&"))
+    } else {
+        url.to_string()
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn resolve_workspace() -> PathBuf {
@@ -228,6 +344,7 @@ fn build_agent_prompt(curl_line: &str) -> String {
 - 応答は **```mermaid で始まるフェンス付きコードブロック 1 つだけ**。その前後に説明文・見出し・箇条書きを書かない。
 - Mermaid は v11 でパース可能な記法にする。ノードラベルに `()` `:` `#` など記号が多い場合は `["..."]` 形式のラベルを使う。
 - ルートが特定できない場合は「ルート不明」として分岐を書く。
+- 処理のまとまりごとに `subgraph` で囲み、そのまとまりが何をしているか簡潔な日本語で名前を付ける（例: `subgraph 認証チェック`, `subgraph DB問い合わせ`）。各 subgraph の直後に `%% ...` で一行の補足説明を入れる。
 
 ユーザー入力（curl 全体）:
 {curl_line}
@@ -304,22 +421,28 @@ fn desktop_path(filename: &str) -> Option<PathBuf> {
     Some(p)
 }
 
-fn mermaid_html_page(title: &str, mermaid: &str) -> String {
+fn mermaid_html_page(title: &str, mermaid: &str, curl_line: &str) -> String {
+    let escaped_curl = html_escape(curl_line);
+    let escaped_title = html_escape(title);
     format!(
         r###"<!DOCTYPE html>
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{}</title>
+    <title>{title}</title>
     <script src="https://cdn.tailwindcss.com"></script>
   </head>
-  <body class="w-[1280px] h-[720px] m-0 p-0 overflow-hidden bg-white">
-    <div class="w-full h-full flex flex-col gap-6 p-10">
+  <body class="min-w-[1280px] min-h-[720px] m-0 p-0 bg-white">
+    <div class="w-full flex flex-col gap-6 p-10">
+      <div class="border border-gray-300 rounded-lg px-5 py-4 bg-gray-50">
+        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Request</h3>
+        <code class="text-sm text-gray-800 break-all">{escaped_curl}</code>
+      </div>
       <div class="border-2 border-blue-300 rounded-lg p-6 bg-blue-50">
-        <h2 class="text-xl font-bold text-blue-900 mb-4">{}</h2>
+        <h2 class="text-xl font-bold text-blue-900 mb-4">{escaped_title}</h2>
         <div class="mermaid">
-{}
+{mermaid}
         </div>
       </div>
     </div>
@@ -339,6 +462,5 @@ fn mermaid_html_page(title: &str, mermaid: &str) -> String {
   </body>
 </html>
 "###,
-        title, title, mermaid
     )
 }
