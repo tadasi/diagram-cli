@@ -82,22 +82,45 @@ pub fn run_setup() -> Result<DgConfig> {
 }
 
 pub fn prompt_input() -> String {
-    eprintln!("分析対象の詳細を指定してください（Enter で送信）:");
+    eprintln!("分析対象の詳細を指定してください:");
     eprintln!("  API 単位の分析 → curl コマンドを入力");
     eprintln!("  包括的な分析   → 画面操作手順や機能説明を自由テキストで入力");
+    eprintln!("  （行末に \\ で継続入力 / 複数行入力は Ctrl+D で送信）");
 
     let mut result = String::new();
+    let mut in_single_quote = false;
     let mut first = true;
+
+    let stdin = io::stdin();
     loop {
         let prompt = if first { "> " } else { "  " };
         first = false;
-        let line = prompt_line(prompt);
-        if line.ends_with('\\') {
+        eprint!("{prompt}");
+        io::stderr().flush().ok();
+
+        let mut buf = String::new();
+        match stdin.read_line(&mut buf) {
+            Ok(0) | Err(_) => break, // EOF (Ctrl+D)
+            _ => {}
+        }
+        let line = buf.trim_end_matches('\n').trim_end_matches('\r');
+
+        // シングルクォートの開閉を追跡
+        for ch in line.chars() {
+            if ch == '\'' {
+                in_single_quote = !in_single_quote;
+            }
+        }
+
+        if line.ends_with('\\') && !in_single_quote {
             result.push_str(&line[..line.len() - 1]);
             result.push(' ');
         } else {
-            result.push_str(&line);
-            break;
+            result.push_str(line);
+            if !in_single_quote {
+                break;
+            }
+            result.push('\n');
         }
     }
     result.trim().to_string()

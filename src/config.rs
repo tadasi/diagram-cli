@@ -8,9 +8,6 @@ use serde::{Deserialize, Serialize};
 pub const DIAGRAM_TYPES: &[(&str, &str)] = &[
     ("flowchart", "フローチャート"),
     ("sequence", "シーケンス図"),
-    ("activity", "アクティビティ図"),
-    ("component", "コンポーネント図"),
-    ("state", "状態遷移図"),
 ];
 
 #[derive(Serialize, Deserialize)]

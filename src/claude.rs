@@ -19,22 +19,6 @@ fn diagram_type_info(diagram_type: &str) -> (&'static str, &'static str, &'stati
             "クライアント・コントローラ・モデル・DB 間の処理の流れをシーケンス図で表現する。\
              参加者（participant）には役割名を付け、`rect` でまとまりを囲んで日本語の注釈を付ける。",
         ),
-        "activity" => (
-            "flowchart TD",
-            "処理のアクティビティをフローチャートで表現する。\
-             開始は `([開始])` 、終了は `([終了])` の丸角ノードにし、\
-             分岐には菱形 `{条件}` を使う。",
-        ),
-        "component" => (
-            "graph TD",
-            "システムのコンポーネント構成と依存関係をコンポーネント図で表現する。\
-             コンポーネントは `[コンポーネント名]` で表し、依存を矢印で結ぶ。",
-        ),
-        "state" => (
-            "stateDiagram-v2",
-            "リソースの状態遷移を状態遷移図で表現する。\
-             `[*]` を開始・終了に使い、各状態間のイベント／条件をラベルに書く。",
-        ),
         _ => (
             "flowchart TD",
             "処理の流れをフローチャートで表現する。",
@@ -46,7 +30,6 @@ fn diagram_type_info(diagram_type: &str) -> (&'static str, &'static str, &'stati
             "処理のまとまりごとに `rect rgb(240,248,255)` で囲み、\
              直前に `Note over ...: まとまりの説明` を入れる。"
         }
-        "state" => "関連する状態を `state \"説明\" as グループ名` でまとめる。",
         _ => {
             "処理のまとまりごとに `subgraph` で囲み、簡潔な日本語で名前を付ける\
              （例: `subgraph 認証チェック`）。各 subgraph の直後に `%% ...` で一行の補足説明を入れる。"
@@ -59,6 +42,12 @@ fn diagram_type_info(diagram_type: &str) -> (&'static str, &'static str, &'stati
 fn build_prompt(input: &str, diagram_type: &str, is_curl: bool) -> String {
     let (directive, type_desc, subgraph_rule) = diagram_type_info(diagram_type);
 
+    let filename_rule = if is_curl {
+        String::new()
+    } else {
+        "\n- Mermaid コードブロック内の **最初の行** に `%% filename: <slug>` の形式でファイル名スラグを出力する。スラグは図の内容を端的に表す半角小文字英字とアンダースコアのみの文字列にする（例: `%% filename: user_registration_flow`）。".to_string()
+    };
+
     let rules = format!(
         r#"出力ルール（厳守）:
 - 応答は **```mermaid で始まるフェンス付きコードブロック 1 つだけ**。その前後に説明文・見出し・箇条書きを書かない。
@@ -66,7 +55,7 @@ fn build_prompt(input: &str, diagram_type: &str, is_curl: bool) -> String {
 - Mermaid は v11 でパース可能な記法にする。ノードラベルに `()` `:` `#` など記号が多い場合は `["..."]` 形式のラベルを使う。
 - ルートが特定できない場合は「ルート不明」として分岐を書く。
 - {subgraph_rule}
-- 図中にトークン・Cookie・セッション ID・API キー・パスワード等の秘匿情報を一切含めない。ヘッダー値やパラメータ値を表示する必要がある場合は `****` に置き換える。"#
+- 図中にトークン・Cookie・セッション ID・API キー・パスワード等の秘匿情報を一切含めない。ヘッダー値やパラメータ値を表示する必要がある場合は `****` に置き換える。{filename_rule}"#
     );
 
     if is_curl {

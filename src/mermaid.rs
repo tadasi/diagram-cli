@@ -9,15 +9,38 @@ pub fn extract_mermaid_block(text: &str) -> Option<String> {
     if body.is_empty() { None } else { Some(body.to_string()) }
 }
 
+/// Mermaid ソースの先頭にある `%% filename: <slug>` 行からスラグを抽出し、
+/// その行を除いた本体を返す。
+pub fn extract_filename_slug(mermaid: &str) -> (Option<String>, String) {
+    if let Some(first_line) = mermaid.lines().next() {
+        let trimmed = first_line.trim();
+        if let Some(rest) = trimmed.strip_prefix("%% filename:") {
+            let slug: String = rest
+                .trim()
+                .chars()
+                .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            let body = mermaid[first_line.len()..].trim_start_matches(['\r', '\n']).to_string();
+            if slug.is_empty() {
+                return (None, body);
+            }
+            return (Some(slug), body);
+        }
+    }
+    (None, mermaid.to_string())
+}
+
 pub fn mermaid_html_page(
     title: &str,
     mermaid: &str,
     input_text: &str,
     input_label: &str,
+    diagram_type_label: &str,
 ) -> String {
     let escaped_input = html_escape(input_text);
     let escaped_title = html_escape(title);
     let escaped_label = html_escape(input_label);
+    let escaped_diagram_type = html_escape(diagram_type_label);
     format!(
         r###"<!DOCTYPE html>
 <html lang="ja">
@@ -34,7 +57,10 @@ pub fn mermaid_html_page(
         <pre class="text-sm text-gray-800 break-all whitespace-pre-wrap">{escaped_input}</pre>
       </div>
       <div class="border-2 border-blue-300 rounded-lg p-6 bg-blue-50">
-        <h2 class="text-xl font-bold text-blue-900 mb-4">{escaped_title}</h2>
+        <div class="flex items-center gap-3 mb-4">
+          <h2 class="text-xl font-bold text-blue-900">{escaped_title}</h2>
+          <span class="text-xs font-medium text-blue-700 bg-blue-200 rounded px-2 py-0.5">{escaped_diagram_type}</span>
+        </div>
         <div class="mermaid">
 {mermaid}
         </div>

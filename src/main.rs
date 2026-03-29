@@ -50,17 +50,26 @@ fn main() -> Result<()> {
 
     let is_curl = is_curl_like(&input);
 
+    // curl の場合は秘匿情報をサニタイズしてからプロンプトに渡す
+    let prompt_input = if is_curl {
+        let parts = parse_curl_string(&input);
+        sanitize::redact_curl_line(&parts)
+    } else {
+        input.clone()
+    };
+
     eprintln!("\nコード分析中……");
 
-    let agent_out = claude::run_claude_agent(&workspace, &input, &config.diagram_type, is_curl)?;
+    let agent_out =
+        claude::run_claude_agent(&workspace, &prompt_input, &config.diagram_type, is_curl)?;
 
-    let mermaid_src = mermaid::extract_mermaid_block(&agent_out).context(format!(
+    let raw_mermaid = mermaid::extract_mermaid_block(&agent_out).context(format!(
         "no Mermaid code block in Claude output. Raw output follows:\n---\n{agent_out}\n---"
     ))?;
 
     let ts = timestamp_suffix();
 
-    let (title, base_name, display_input, input_label) = if is_curl {
+    let (title, base_name, mermaid_src, display_input, input_label) = if is_curl {
         let parts = if args.is_empty() {
             parse_curl_string(&input)
         } else {
@@ -74,13 +83,17 @@ fn main() -> Result<()> {
         (
             format!("{slug} ({method})"),
             format!("dg_{slug}_{method}_{ts}"),
+            raw_mermaid,
             redacted,
             "Request",
         )
     } else {
+        let (slug_opt, body) = mermaid::extract_filename_slug(&raw_mermaid);
+        let slug = slug_opt.unwrap_or_else(|| "freetext".to_string());
         (
             "システム図".to_string(),
-            format!("dg_freetext_{ts}"),
+            format!("dg_{slug}_{ts}"),
+            body,
             input.clone(),
             "Description",
         )
@@ -94,7 +107,8 @@ fn main() -> Result<()> {
     fs::write(&mmd_path, &mermaid_src)?;
 
     let html_path = out_dir.join(format!("{base_name}.html"));
-    let html = mermaid::mermaid_html_page(&title, &mermaid_src, &display_input, input_label);
+    let diagram_type_label = config.diagram_type_label();
+    let html = mermaid::mermaid_html_page(&title, &mermaid_src, &display_input, input_label, diagram_type_label);
     fs::write(&html_path, html)?;
 
     eprintln!("実行が完了しました。出力内容を確認してください。");
@@ -130,8 +144,8 @@ fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  dg                          # 対話形式で入力（curl / 自由テキスト）");
     eprintln!("  dg init                     # 初期設定（対象ディレクトリ・図の種類・出力先）");
-    eprintln!("  dg [curl args...] <url>     # API 単位のシステム図を生成");
-    eprintln!("  dg <自由テキスト>           # 画面操作手順等から包括的なシステム図を生成");
+    eprintln!("  dg [curl args...] <url>     # API 単位のシステム図を生成（フローチャート / シーケンス図）");
+    eprintln!("  dg <自由テキスト>           # 画面操作手順等から包括的なシステム図を生成（フローチャート / シーケンス図）");
     eprintln!();
     eprintln!("Environment:");
     eprintln!("  DG_BASE_URL     パスだけ渡すときのオリジン（例: http://localhost:3000）");
