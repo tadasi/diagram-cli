@@ -1,12 +1,18 @@
-# diagram-cli
+# diagram-cli (`dg`)
 
-AI 連携（Claude Code）で Rails コードを分析し、Mermaid ベースのシステム図を生成する CLI ツール。
+Rails コードを Claude Code CLI（AI Agent）で分析し、Mermaid ベースのシステム図を自動生成する CLI ツール。
+
+> **NOTE: 生成される図の正確性について**
+>
+> 本ツールが出力するシステム図は、実行環境の **Claude Code CLI が Rails コードを解釈した結果**に基づいて生成されます。
+> AI による推論を含むため、**図の内容が実際のコードの振る舞いと一致することを保証するものではありません。**
+> 生成結果は設計の理解や議論の出発点としてご活用ください。最終的な正確性はコードそのものを確認してください。
 
 ## インストール
 
 ### 方法 1: インストールスクリプト（推奨）
 
-Rust 不要。ビルド済みバイナリをダウンロードして配置します。
+Rust 不要。GitHub Releases からビルド済みバイナリをダウンロードして配置します。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tadasi/diagram-cli/main/install.sh | bash
@@ -31,43 +37,64 @@ cargo install --git https://github.com/tadasi/diagram-cli.git
 
 ## セットアップ
 
+初回実行時に自動でセットアップが始まります。手動で設定するには:
+
 ```bash
-dg init   # 対話形式で対象ディレクトリ・図の種類・出力先を設定
+dg init
 ```
+
+対話形式で以下の 3 項目を設定します。設定は `~/.config/dg/config.json` に保存されます。
+
+| 設定項目 | 説明 |
+|---|---|
+| 対象ディレクトリ | 解析する Rails リポジトリのパス（`~` からの相対パス） |
+| 図の種類 | フローチャート / シーケンス図 / アクティビティ図 / コンポーネント図 / 状態遷移図 |
+| 出力先 | 生成ファイルの出力先ディレクトリ（`~` からの相対パス、既定: `Desktop`） |
 
 ## 使い方
 
 ```bash
 dg                          # 対話形式で入力（curl / 自由テキスト）
-dg init                     # 初期設定（対象ディレクトリ・図の種類・出力先）
-dg [curl args...] <url>     # API 単位のシステム図を生成
-dg <自由テキスト>           # 画面操作手順等から包括的なシステム図を生成
+dg init                     # 設定を変更
+dg [curl args...] <url>     # curl 形式で API 単位のシステム図を生成
+dg <自由テキスト>           # 自由テキストで包括的なシステム図を生成
 ```
 
-### 例
+実行すると設定の確認画面が表示され、そのまま進むか設定を変更するか選択できます。
+分析完了後、`.mmd`（Mermaid ソース）と `.html`（ブラウザ表示用）が出力先に生成され、HTML がブラウザで自動的に開きます。
+
+### 例: curl 形式（API 単位の分析）
 
 ```bash
-# curl 形式で API のシステム図を生成
-dg curl --location 'http://localhost:3000/tech_book_terms'
+# フル URL を指定
+dg curl --location 'http://localhost:3000/users'
 
 # URL だけでも可
-dg 'http://localhost:3000/tech_reference_terms'
+dg 'http://localhost:3000/articles'
 
-# ベース URL を環境変数で設定するとパスだけで指定可能
+# DG_BASE_URL を設定するとパスだけで指定可能
 export DG_BASE_URL='http://localhost:3000'
-dg /tech_articles
+dg /comments
+```
 
-# 自由テキストで包括的なシステム図を生成
+リポジトリ直下に `.dg-base-url` ファイル（1行でオリジンを記載）を置いても同様に機能します。
+
+### 例: 自由テキスト（包括的な分析）
+
+```bash
 dg "ユーザーがログインしてから記事を投稿するまでのフロー"
 ```
 
+引数なしで `dg` を実行すると、対話形式で複数行の入力が可能です。
+
 ## 環境変数
 
-| 変数 | 説明 |
-|---|---|
-| `DG_BASE_URL` | パスだけ渡すときのオリジン（例: `http://localhost:3000`） |
-| `DG_CLAUDE_MODEL` | Claude CLI の `--model`（既定: `claude-sonnet-4-6`） |
-| `CLAUDE_CLI` | `claude` 実行ファイルのパス（既定: PATH から解決） |
+| 変数 | 説明 | 既定値 |
+|---|---|---|
+| `DG_BASE_URL` | パスだけ渡すときのオリジン | なし |
+| `DG_CLAUDE_MODEL` | Claude CLI に渡す `--model` | `claude-sonnet-4-6` |
+| `DG_MAX_TURNS` | Claude CLI の `--max-turns` | `6` |
+| `CLAUDE_CLI` | `claude` 実行ファイルのパス | PATH から解決 |
 
 ## リリース手順（メンテナ向け）
 
@@ -76,4 +103,8 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-タグを push すると GitHub Actions が macOS (Intel/Apple Silicon) と Linux 向けにビルドし、GitHub Release を自動作成します。
+タグを push すると GitHub Actions が macOS (Intel / Apple Silicon) と Linux 向けにビルドし、GitHub Release を自動作成します。
+
+## ライセンス
+
+[MIT](LICENSE)
