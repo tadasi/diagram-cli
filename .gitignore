@@ -19,3 +19,49 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# ---- Secrets / credentials (絶対にコミットしない) ----
+# 環境変数ファイル (API キー等)
+.env
+.env.*
+!.env.example
+.envrc
+
+# 秘密鍵 / 証明書
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+id_rsa
+id_ed25519
+
+# クラウド / サービス資格情報
+.aws/
+.gcp/
+credentials
+credentials.json
+service-account*.json
+gha-creds-*.json
+
+# シークレット格納ディレクトリ
+secrets/
+.secrets/
+private/
+
+# ---- ローカル設定 / 一時ファイル ----
+# OS / エディタ
+.DS_Store
+Thumbs.db
+.vscode/
+*.swp
+*.swo
+
+# ログ
+*.log
+logs/
+
+# diagram-cli が生成する一時ファイル / 出力物 (任意)
+*.tmp
+tmp/

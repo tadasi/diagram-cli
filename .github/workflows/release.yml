@@ -5,11 +5,20 @@ on:
     tags:
       - "v*"
 
+# 既定は最小権限 (read)。書き込みが必要な job でのみ昇格する。
 permissions:
-  contents: write
+  contents: read
+
+# 同一タグの再 push 等での競合を防ぐ
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
+    # build job は読み取りのみで十分
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -49,13 +58,17 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # GitHub Release を作成するためにのみ書き込み権限を付与
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        # サードパーティ Action は SHA でピン留め (v2.6.1)
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe
         with:
           generate_release_notes: true
           files: "*.tar.gz"
