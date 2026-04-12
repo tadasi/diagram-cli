@@ -116,11 +116,13 @@ pub fn run_claude_agent(
     let output = Command::new(&claude)
         .args([
             "-p",
-            "--dangerously-skip-permissions",
             "--model",
             &model,
             "--max-turns",
             &max_turns,
+            "--allowedTools",
+            "Read,Glob,Grep",
+            "--",
             &prompt,
         ])
         .current_dir(workspace)

@@ -17,40 +17,44 @@ use curl::{
 };
 
 fn main() -> Result<()> {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let args: Vec<String> = env::args().skip(1).collect(); // dg 以降の引数を全てコレクションに変換
 
     match args.first().map(|s| s.as_str()) {
+        // 初期設定
         Some("init") => {
             prompt::run_setup()?;
             return Ok(());
         }
+        // ヘルプ
         Some("--help" | "-h") => {
             print_usage();
             return Ok(());
         }
+        // 上記以外が指定された場合は、以降の処理に進む
         _ => {}
     }
 
-    let config = load_config_interactive()?;
-    let workspace = config.workspace_abs();
+    // 設定確認
+    let config = setup_config_interactive()?;
 
+    // 設定済みの「分析対象ディレクトリ」が現在も存在するか確認
+    let workspace = config.workspace_full_path();
     if !workspace.exists() {
-        bail!("workspace does not exist: {}", workspace.display());
+        bail!("分析対象のディレクトリが存在しません。再設定をお願いします。: {}", workspace.display());
     }
 
     let input = if args.is_empty() {
         let text = prompt::prompt_input();
         if text.is_empty() {
-            bail!("入力がありません");
+            bail!("入力がありません"); // bail!: return Err(anyhow!(...)) の簡略化
         }
         text
     } else {
         args.join(" ")
     };
 
+    // 引数に curl コマンドが指定された場合は、秘匿情報をサニタイズしてからプロンプトに渡す
     let is_curl = is_curl_like(&input);
-
-    // curl の場合は秘匿情報をサニタイズしてからプロンプトに渡す
     let prompt_input = if is_curl {
         let parts = parse_curl_string(&input);
         sanitize::redact_curl_line(&parts)
@@ -119,7 +123,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_config_interactive() -> Result<DgConfig> {
+// インタラクティブに設定を行う
+fn setup_config_interactive() -> Result<DgConfig> {
     loop {
         let c = match DgConfig::load() {
             Some(c) => c,
@@ -128,10 +133,12 @@ fn load_config_interactive() -> Result<DgConfig> {
                 prompt::run_setup()?
             }
         };
-        eprintln!("指定のコードを分析し、システム図を出力します。");
+        eprintln!("指定のソースコードを分析し、システム図を出力します。");
         eprintln!("設定を確認してください。\n");
         prompt::print_config(&c);
-        if prompt::prompt_yn("設定を変更しますか？ (Y/N): ") {
+
+        // 必要に応じて、設定変更
+        if prompt::should_change_settings() {
             prompt::run_setup()?;
         } else {
             eprintln!();
@@ -140,12 +147,13 @@ fn load_config_interactive() -> Result<DgConfig> {
     }
 }
 
+// ヘルプ情報
 fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  dg                          # 対話形式で入力（curl / 自由テキスト）");
-    eprintln!("  dg init                     # 初期設定（対象ディレクトリ・図の種類・出力先）");
-    eprintln!("  dg [curl args...] <url>     # API 単位のシステム図を生成（フローチャート / シーケンス図）");
-    eprintln!("  dg <自由テキスト>           # 画面操作手順等から包括的なシステム図を生成（フローチャート / シーケンス図）");
+    eprintln!("  dg init                     # 初期設定（分析対象ディレクトリ指定・システム図の種類選択・出力先指定）");
+    eprintln!("  dg [curl args...] <url>     # API 単位のシステム図を生成");
+    eprintln!("  dg <自由テキスト>           # 画面操作手順等から包括的なシステム図を生成");
     eprintln!();
     eprintln!("Environment:");
     eprintln!("  DG_BASE_URL     パスだけ渡すときのオリジン（例: http://localhost:3000）");

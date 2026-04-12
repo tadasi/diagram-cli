@@ -39,7 +39,7 @@ impl DgConfig {
         Ok(())
     }
 
-    pub fn workspace_abs(&self) -> PathBuf {
+    pub fn workspace_full_path(&self) -> PathBuf {
         home_dir().join(&self.workspace)
     }
 

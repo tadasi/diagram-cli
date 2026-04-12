@@ -7,13 +7,22 @@ use chrono::Local;
 
 pub fn is_curl_like(input: &str) -> bool {
     let first = input.trim().lines().next().unwrap_or("").trim();
-    first.starts_with("curl ")
-        || first.starts_with("http://")
-        || first.starts_with("https://")
-        || first.starts_with("--location")
-        || first.starts_with("-L ")
-        || first.starts_with("-X ")
-        || first.starts_with("-H ")
+    // 先頭の "dg" / "curl" を読み飛ばして実質的なトークンで判定
+    let mut s = first;
+    if let Some(rest) = s.strip_prefix("dg ") {
+        s = rest.trim_start();
+    }
+    if let Some(rest) = s.strip_prefix("curl ") {
+        s = rest.trim_start();
+    } else if s == "curl" {
+        return true;
+    }
+    s.starts_with("http://")
+        || s.starts_with("https://")
+        || s.starts_with("--location")
+        || s.starts_with("-L ")
+        || s.starts_with("-X ")
+        || s.starts_with("-H ")
 }
 
 pub fn parse_curl_string(input: &str) -> Vec<String> {
