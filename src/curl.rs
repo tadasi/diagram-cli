@@ -1,7 +1,3 @@
-use std::env;
-use std::fs;
-use std::path::Path;
-
 use anyhow::{bail, Result};
 use chrono::Local;
 
@@ -37,7 +33,7 @@ pub fn parse_curl_string(input: &str) -> Vec<String> {
     parts
 }
 
-pub fn resolve_curl_parts(args: Vec<String>, workspace: &Path) -> Result<Vec<String>> {
+pub fn resolve_curl_parts(args: Vec<String>) -> Result<Vec<String>> {
     if args.is_empty() {
         bail!("no arguments");
     }
@@ -62,32 +58,7 @@ pub fn resolve_curl_parts(args: Vec<String>, workspace: &Path) -> Result<Vec<Str
         return Ok(rest);
     }
 
-    if let Some(base) = resolve_base_url(workspace) {
-        let base = base.trim_end_matches('/');
-        if rest.len() == 1 {
-            let p = rest[0].trim();
-            let path = if p.starts_with('/') {
-                p.to_string()
-            } else {
-                format!("/{}", p.trim_start_matches('/'))
-            };
-            return Ok(vec!["--location".to_string(), format!("{base}{path}")]);
-        }
-    }
-
-    bail!("need a URL (http/https), or --location/-L <url>, or one path with DG_BASE_URL / .dg-base-url")
-}
-
-fn resolve_base_url(workspace: &Path) -> Option<String> {
-    if let Ok(v) = env::var("DG_BASE_URL") {
-        let t = v.trim();
-        if !t.is_empty() {
-            return Some(t.to_string());
-        }
-    }
-    let s = fs::read_to_string(workspace.join(".dg-base-url")).ok()?;
-    let line = s.lines().next()?.trim();
-    if line.is_empty() { None } else { Some(line.to_string()) }
+    bail!("need a URL (http/https) or --location/-L <url>")
 }
 
 pub fn extract_url_from_parts(parts: &[String]) -> Option<String> {

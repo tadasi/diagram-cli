@@ -77,7 +77,7 @@ fn main() -> Result<()> {
         let parts = if args.is_empty() {
             parse_curl_string(&input)
         } else {
-            resolve_curl_parts(args, &workspace).unwrap_or_else(|_| parse_curl_string(&input))
+            resolve_curl_parts(args).unwrap_or_else(|_| parse_curl_string(&input))
         };
         let url = extract_url_from_parts(&parts).unwrap_or_default();
         let path = extract_path(&url).unwrap_or_else(|| "/".to_string());
@@ -117,7 +117,14 @@ fn main() -> Result<()> {
 
     eprintln!("実行が完了しました。出力内容を確認してください。");
 
-    let _ = Command::new("open").arg(&html_path).status();
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "start"
+    } else {
+        "xdg-open" // Linux / WSL
+    };
+    let _ = Command::new(opener).arg(&html_path).status();
 
     println!("出力ファイル: {}", html_path.display());
     Ok(())
@@ -156,7 +163,5 @@ fn print_usage() {
     eprintln!("  dg <自由テキスト>           # 画面操作手順等から包括的なシステム図を生成");
     eprintln!();
     eprintln!("Environment:");
-    eprintln!("  DG_BASE_URL     パスだけ渡すときのオリジン（例: http://localhost:3000）");
-    eprintln!("  DG_CLAUDE_MODEL claude CLI の --model（未設定時は claude-sonnet-4-6）");
-    eprintln!("  CLAUDE_CLI      claude 実行ファイルのパス（既定: PATH から解決）");
+    eprintln!("  DG_CLAUDE_MODEL claude CLI の --model（未設定時は claude-opus-4-7）");
 }

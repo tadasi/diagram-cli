@@ -4,19 +4,11 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
-fn resolve_claude_cli() -> PathBuf {
-    env::var("CLAUDE_CLI")
-        .ok()
-        .map(PathBuf::from)
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from("claude"))
-}
-
 fn diagram_type_info(diagram_type: &str) -> (&'static str, &'static str, &'static str) {
     let (directive, type_desc) = match diagram_type {
         "sequence" => (
             "sequenceDiagram",
-            "クライアント・コントローラ・モデル・DB 間の処理の流れをシーケンス図で表現する。\
+            "各レイヤー・DB 間の処理の流れをシーケンス図で表現する。\
              参加者（participant）には役割名を付け、`rect` でまとまりを囲んで日本語の注釈を付ける。",
         ),
         _ => (
@@ -60,12 +52,12 @@ fn build_prompt(input: &str, diagram_type: &str, is_curl: bool) -> String {
 
     if is_curl {
         format!(
-            r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
+            r#"あなたはこのワークスペース内のアプリケーションコードを読む AI Agent です。
 
 次の HTTP リクエスト（ユーザーが入力した curl 相当の文字列全体）を解釈してください。
 
-1. `config/routes.rb` から該当するルートと `Controller#action` を特定する（GET/POST 等はリクエストから推測）。
-2. 該当コントローラと、そこから呼ばれる主要なモデル/スコープ/関連をコードに基づいて要約する。
+1. ルーティング定義から該当するエンドポイントとハンドラを特定する（GET/POST 等はリクエストから推測）。
+2. 該当ハンドラと、そこから呼ばれる主要なロジック・データアクセス層をコードに基づいて要約する。
 3. {type_desc}
 
 {rules}
@@ -76,11 +68,11 @@ fn build_prompt(input: &str, diagram_type: &str, is_curl: bool) -> String {
         )
     } else {
         format!(
-            r#"あなたはこのワークスペース内の Rails アプリを読む AI Agent です。
+            r#"あなたはこのワークスペース内のアプリケーションコードを読む AI Agent です。
 
 以下のユーザーの説明を解釈し、関連するコードを特定してシステム図を生成してください。
 
-1. 説明に含まれる画面操作・機能・処理を特定し、関連するルート・コントローラ・モデル・ビューをコードに基づいて特定する。
+1. 説明に含まれる画面操作・機能・処理を特定し、関連するルーティング・ハンドラ・ロジック・データアクセス層をコードに基づいて特定する。
 2. 特定した処理の流れを、コードの実装に基づいて正確に把握する。
 3. {type_desc}
 
@@ -99,13 +91,13 @@ pub fn run_claude_agent(
     diagram_type: &str,
     is_curl: bool,
 ) -> Result<String> {
-    let claude = resolve_claude_cli();
+    let claude = PathBuf::from("claude");
     let prompt = build_prompt(input, diagram_type, is_curl);
 
     let model = env::var("DG_CLAUDE_MODEL")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+        .unwrap_or_else(|| "claude-opus-4-7".to_string());
 
     let max_turns = env::var("DG_MAX_TURNS")
         .ok()
