@@ -112,3 +112,56 @@ pub fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_curl_line_removes_cookie() {
+        let parts = vec![
+            "-b".into(), "session=abc123".into(),
+            "http://localhost:3000/users".into(),
+        ];
+        let result = redact_curl_line(&parts);
+        assert!(!result.contains("abc123"));
+        assert!(result.contains("秘匿情報は省略"));
+    }
+
+    #[test]
+    fn redact_curl_line_removes_auth_header() {
+        let parts = vec![
+            "-H".into(), "Authorization: Bearer token123".into(),
+            "http://localhost:3000/users".into(),
+        ];
+        let result = redact_curl_line(&parts);
+        assert!(!result.contains("token123"));
+        assert!(result.contains("秘匿情報は省略"));
+    }
+
+    #[test]
+    fn redact_curl_line_keeps_non_sensitive_header() {
+        let parts = vec![
+            "-H".into(), "Content-Type: application/json".into(),
+            "http://localhost:3000/users".into(),
+        ];
+        let result = redact_curl_line(&parts);
+        assert!(result.contains("Content-Type: application/json"));
+        assert!(!result.contains("秘匿情報は省略"));
+    }
+
+    #[test]
+    fn redact_curl_line_redacts_url_token_param() {
+        let parts = vec!["http://localhost:3000/users?token=secret123&page=1".into()];
+        let result = redact_curl_line(&parts);
+        assert!(result.contains("token=****"));
+        assert!(result.contains("page=1"));
+        assert!(!result.contains("secret123"));
+    }
+
+    #[test]
+    fn html_escape_special_chars() {
+        assert_eq!(html_escape("<script>alert(\"xss\")&</script>"),
+            "&lt;script&gt;alert(&quot;xss&quot;)&amp;&lt;/script&gt;");
+    }
+}

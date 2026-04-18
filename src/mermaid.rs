@@ -84,3 +84,50 @@ pub fn mermaid_html_page(
 "###,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_mermaid_block_basic() {
+        let input = "some text\n```mermaid\nflowchart TD\n  A --> B\n```\nmore text";
+        assert_eq!(
+            extract_mermaid_block(input),
+            Some("flowchart TD\n  A --> B".into())
+        );
+    }
+
+    #[test]
+    fn extract_mermaid_block_none_when_empty() {
+        assert_eq!(extract_mermaid_block("```mermaid\n```"), None);
+    }
+
+    #[test]
+    fn extract_mermaid_block_none_when_missing() {
+        assert_eq!(extract_mermaid_block("no mermaid here"), None);
+    }
+
+    #[test]
+    fn extract_filename_slug_present() {
+        let input = "%% filename: user_login_flow\nflowchart TD\n  A --> B";
+        let (slug, body) = extract_filename_slug(input);
+        assert_eq!(slug, Some("user_login_flow".into()));
+        assert_eq!(body, "flowchart TD\n  A --> B");
+    }
+
+    #[test]
+    fn extract_filename_slug_absent() {
+        let input = "flowchart TD\n  A --> B";
+        let (slug, body) = extract_filename_slug(input);
+        assert_eq!(slug, None);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn extract_filename_slug_filters_invalid_chars() {
+        let input = "%% filename: Hello-World! 123\nrest";
+        let (slug, _) = extract_filename_slug(input);
+        assert_eq!(slug, Some("elloorld123".into()));
+    }
+}
