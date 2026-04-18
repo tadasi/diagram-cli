@@ -53,7 +53,7 @@ fn main() -> Result<()> {
         args.join(" ")
     };
 
-    // 引数に curl コマンドが指定された場合は、秘匿情報をサニタイズしてからプロンプトに渡す
+    // 引数に curl コマンドが指定された場合は、秘匿情報（例: cookie）をサニタイズする
     let is_curl = is_curl_like(&input);
     let prompt_input = if is_curl {
         let parts = parse_curl_string(&input);
