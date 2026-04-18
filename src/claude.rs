@@ -52,7 +52,7 @@ fn build_prompt(input: &str, diagram_type: &str, is_curl: bool) -> String {
 
     if is_curl {
         format!(
-            r#"あなたはこのワークスペース内のアプリケーションコードを読む AI Agent です。
+            r#"あなたはこのワークスペース内のアプリケーションコードを読む AI Agent です（※なお秘匿情報が含まれ得るファイル・及び秘匿情報は絶対に読まないようにしてください）。
 
 次の HTTP リクエスト（ユーザーが入力した curl 相当の文字列全体）を解釈してください。
 
@@ -114,6 +114,14 @@ pub fn run_claude_agent(
             &max_turns,
             "--allowedTools",
             "Read,Glob,Grep",
+            "--disallowedTools",
+            "Read(.env)",
+            "Read(.env.*)",
+            "Read(**/*.pem)",
+            "Read(**/*.key)",
+            "Read(**/*.p12)",
+            "Read(**/credentials*)",
+            "Read(**/service-account*.json)",
             "--",
             &prompt,
         ])
